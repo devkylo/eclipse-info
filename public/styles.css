@@ -1636,7 +1636,6 @@ input[type='number']:focus {
   pointer-events: none;
 }
 
-.app-shell.is-view-only .notify-panel,
 .app-shell.is-view-only #btn-open-maintenance,
 .app-shell.is-view-only #btn-open-settings {
   display: none;
