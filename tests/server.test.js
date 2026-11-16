@@ -92,7 +92,12 @@ test('shared-state and auth enforce view-only, host setup, editor code issuance,
     assert.equal(anonJson.auth.role, 'viewer');
     assert.equal(anonJson.sharedState.revision, 1);
     assert.equal(anonJson.sharedState.servers['barkadion-05'].bosses.length, 14);
-    assert.deepEqual(anonJson.sharedState.notice, { text: '', fontSize: 14, color: '#ffffff' });
+    assert.deepEqual(anonJson.sharedState.notice, {
+      text: '',
+      fontSize: 12,
+      color: '#ffffff',
+      bold: false,
+    });
 
     const anonPut = await invokeHandler(
       handler,
@@ -135,7 +140,7 @@ test('shared-state and auth enforce view-only, host setup, editor code issuance,
     // Host updates shared schedule & notice
     const hostEdited = structuredClone(anonJson.sharedState);
     hostEdited.servers['barkadion-05'].bosses[6].killDurationSec = 120;
-    hostEdited.notice = { text: '금요일 21시 사바토 집결!', fontSize: 18, color: '#ffd700' };
+    hostEdited.notice = { text: '금요일 21시 사바토 집결!', fontSize: 18, color: '#ffd700', bold: true };
     const hostPut = await invokeHandler(
       handler,
       'PUT',
@@ -152,6 +157,7 @@ test('shared-state and auth enforce view-only, host setup, editor code issuance,
       text: '금요일 21시 사바토 집결!',
       fontSize: 18,
       color: '#ffd700',
+      bold: true,
     });
 
     // Stale expectedRevision returns 409 conflict

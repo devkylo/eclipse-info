@@ -204,8 +204,9 @@ const EXTRA_FIELD_PRESET_IDS = new Set(['belkar', 'sabato', 'mallok', 'charle'])
 export function createDefaultNotice() {
   return {
     text: '',
-    fontSize: 14,
+    fontSize: 12,
     color: '#ffffff',
+    bold: false,
   };
 }
 
@@ -213,10 +214,11 @@ export function sanitizeNoticeObject(rawNotice) {
   const raw = rawNotice && typeof rawNotice === 'object' ? rawNotice : {};
   const text = typeof raw.text === 'string' ? raw.text.slice(0, 1000) : '';
   const parsedSize = Math.round(Number(raw.fontSize));
-  const fontSize = Number.isFinite(parsedSize) ? Math.max(11, Math.min(28, parsedSize)) : 14;
+  const fontSize = Number.isFinite(parsedSize) ? Math.max(10, Math.min(28, parsedSize)) : 12;
   const rawColor = typeof raw.color === 'string' ? raw.color.trim() : '';
   const color = /^#[0-9a-fA-F]{6}$/.test(rawColor) ? rawColor.toLowerCase() : '#ffffff';
-  return { text, fontSize, color };
+  const bold = Boolean(raw.bold);
+  return { text, fontSize, color, bold };
 }
 
 export const PRESET_ABYSS_BOSS_SPECS = [

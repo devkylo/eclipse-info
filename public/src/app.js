@@ -163,7 +163,9 @@ function isEditingNotice() {
   const active = document.activeElement;
   return Boolean(
     active &&
-      ['inp-notice-text', 'sel-notice-font-size', 'inp-notice-color'].includes(active.id)
+      ['inp-notice-text', 'sel-notice-font-size', 'chk-notice-bold', 'inp-notice-color'].includes(
+        active.id
+      )
   );
 }
 
@@ -221,20 +223,23 @@ function updateRestoreHiddenButton() {
   btn.className = count > 0 ? 'btn btn-xs btn-warning' : 'btn btn-xs btn-secondary';
 }
 
-function applyNoticeStylesToInputs(fontSize, color) {
+function applyNoticeStylesToInputs(fontSize, color, bold = false) {
   const textarea = $('inp-notice-text');
   const viewEl = $('notice-view-text');
-  const cleanSize = `${Math.max(11, Math.min(28, Math.round(Number(fontSize) || 14)))}px`;
+  const cleanSize = `${Math.max(10, Math.min(28, Math.round(Number(fontSize) || 12)))}px`;
   const cleanColor = /^#[0-9a-fA-F]{6}$/.test(String(color || '').trim())
     ? String(color).trim().toLowerCase()
     : '#ffffff';
+  const cleanWeight = bold ? '700' : '400';
   if (textarea) {
     textarea.style.fontSize = cleanSize;
     textarea.style.color = cleanColor;
+    textarea.style.fontWeight = cleanWeight;
   }
   if (viewEl) {
     viewEl.style.fontSize = cleanSize;
     viewEl.style.color = cleanColor;
+    viewEl.style.fontWeight = cleanWeight;
   }
 }
 
@@ -242,6 +247,7 @@ function renderNoticeBox(forceInputs = false) {
   const notice = sanitizeNoticeObject(appState.notice);
   const textarea = $('inp-notice-text');
   const sizeSel = $('sel-notice-font-size');
+  const boldChk = $('chk-notice-bold');
   const colorInp = $('inp-notice-color');
   const viewEl = $('notice-view-text');
 
@@ -252,8 +258,9 @@ function renderNoticeBox(forceInputs = false) {
       const hasOption = [...sizeSel.options].some((o) => o.value === targetVal);
       if (hasOption) sizeSel.value = targetVal;
     }
+    if (boldChk) boldChk.checked = Boolean(notice.bold);
     if (colorInp) colorInp.value = notice.color;
-    applyNoticeStylesToInputs(notice.fontSize, notice.color);
+    applyNoticeStylesToInputs(notice.fontSize, notice.color, notice.bold);
   }
 
   if (viewEl) {
@@ -409,6 +416,9 @@ async function refreshFromServer(silent = false) {
     renderGlobalNotifyControls();
     renderNoticeBox();
     renderBossList();
+    if (!$('modal-hidden-bosses').classList.contains('hidden')) {
+      renderHiddenBossesModal();
+    }
     updateAuthAndSyncUI();
     updateTickDisplays(nowMs);
     if (silent && dataUpdated) {
@@ -1589,28 +1599,128 @@ function computeOrderSignature(sorted, nowMs) {
     .join('|');
 }
 
-function restoreAllHiddenBosses() {
+function restoreHiddenBossIds(bossIds) {
   const sid = appState.activeServerId || DEFAULT_SERVER_ID;
   const serverPrefs = { ...(appState.bossViewPrefs?.[sid] || {}) };
-  let restoredCount = 0;
-  for (const [bid, pref] of Object.entries(serverPrefs)) {
-    if (pref?.hidden) {
-      restoredCount += 1;
-      if (pref.favorite) {
-        serverPrefs[bid] = { favorite: true, hidden: false };
-      } else {
-        delete serverPrefs[bid];
-      }
+  const targetSet = new Set(bossIds);
+  const restoredNames = [];
+  const bossById = new Map(getActiveBosses().map((b) => [b.id, b]));
+
+  for (const bid of targetSet) {
+    const pref = serverPrefs[bid];
+    if (!pref?.hidden) continue;
+    restoredNames.push(bossById.get(bid)?.name || bid);
+    if (pref.favorite) {
+      serverPrefs[bid] = { favorite: true, hidden: false };
+    } else {
+      delete serverPrefs[bid];
     }
   }
+
+  if (!restoredNames.length) return 0;
+
   appState.bossViewPrefs = { ...(appState.bossViewPrefs || {}), [sid]: serverPrefs };
   localPrefs.bossViewPrefs = appState.bossViewPrefs;
   persistLocalOnly();
   currentSpotlightKey = '';
   renderBossList();
-  if (restoredCount > 0) {
-    showToast('숨긴 보스 복원', `숨겨져 있던 보스 ${restoredCount}종을 다시 표시했습니다.`);
+
+  if (getHiddenBossCount() === 0) {
+    closeModal('modal-hidden-bosses');
+  } else if (!$('modal-hidden-bosses').classList.contains('hidden')) {
+    renderHiddenBossesModal();
   }
+
+  const summary =
+    restoredNames.length === 1
+      ? `'${restoredNames[0]}' 보스를 다시 표시했습니다.`
+      : `선택한 보스 ${restoredNames.length}종을 다시 표시했습니다.`;
+  showToast('숨긴 보스 복원', summary);
+  return restoredNames.length;
+}
+
+function restoreAllHiddenBosses() {
+  const hiddenIds = getActiveBosses()
+    .filter((b) => getBossViewPref(b.id).hidden)
+    .map((b) => b.id);
+  return restoreHiddenBossIds(hiddenIds);
+}
+
+function updateHiddenSelectedCount() {
+  const listEl = $('hidden-bosses-list');
+  const btnSelected = $('btn-restore-selected-hidden');
+  const btnSelectAll = $('btn-hidden-select-all');
+  if (!listEl || !btnSelected) return;
+  const allBoxes = [...listEl.querySelectorAll('[data-hidden-select]')];
+  const checkedCount = allBoxes.filter((cb) => cb.checked).length;
+  btnSelected.textContent = `선택 복원 (${checkedCount})`;
+  btnSelected.disabled = checkedCount === 0;
+  if (btnSelectAll) {
+    btnSelectAll.textContent =
+      allBoxes.length > 0 && checkedCount === allBoxes.length ? '전체 해제' : '전체 선택';
+    btnSelectAll.disabled = allBoxes.length === 0;
+  }
+}
+
+function getHiddenBossScheduleSummary(boss) {
+  if (isWorldBoss(boss)) {
+    const times = normalizeFixedTimes(boss.fixedTimes).join(', ') || '미설정';
+    return `고정 ${times}`;
+  }
+  if (isWeeklyFixedBoss(boss)) {
+    return `매주 ${formatWeekdayKorean(boss.weeklyDay)} ${boss.weeklyTime} 고정`;
+  }
+  return `리스폰 ${formatDurationKorean(getEffectiveRespawnSec(boss))}`;
+}
+
+function renderHiddenBossesModal() {
+  const serverMeta = getServerMeta(appState.activeServerId);
+  $('hidden-bosses-server-pill').textContent = serverMeta.name;
+  const listEl = $('hidden-bosses-list');
+  const hiddenBosses = getActiveBosses().filter((b) => getBossViewPref(b.id).hidden);
+  $('btn-restore-all-hidden').disabled = hiddenBosses.length === 0;
+
+  if (!hiddenBosses.length) {
+    listEl.innerHTML = `<div class="empty-muted">현재 숨겨진 보스가 없습니다.</div>`;
+    updateHiddenSelectedCount();
+    return;
+  }
+
+  listEl.innerHTML = hiddenBosses
+    .map((boss) => {
+      const typeMeta = getBossTypeMeta(boss);
+      const scheduleText = getHiddenBossScheduleSummary(boss);
+      return `
+        <div class="hidden-boss-row">
+          <label class="hidden-boss-check">
+            <input type="checkbox" data-hidden-select="${escapeHtml(boss.id)}" />
+            <span class="boss-dot" style="background:${escapeHtml(boss.color || '#3b82f6')}"></span>
+            <div class="hidden-boss-info">
+              <div class="hidden-boss-title">
+                <span class="pill ${typeMeta.badgeClass}" style="padding:1px 6px; font-size:10.5px;">${typeMeta.shortLabel}</span>
+                ${boss.level ? `<span class="boss-lv" style="font-size:11.5px;">Lv.${boss.level}</span>` : ''}
+                <span class="hidden-boss-name">${escapeHtml(boss.name)}</span>
+              </div>
+              <div class="hidden-boss-meta">${escapeHtml(scheduleText)}${boss.memo ? ` · ${escapeHtml(boss.memo)}` : ''}</div>
+            </div>
+          </label>
+          <button
+            type="button"
+            class="btn btn-xs btn-secondary"
+            data-restore-boss-id="${escapeHtml(boss.id)}"
+          >복원</button>
+        </div>
+      `;
+    })
+    .join('');
+
+  updateHiddenSelectedCount();
+}
+
+function openHiddenBossesModal() {
+  if (getHiddenBossCount() === 0) return;
+  renderHiddenBossesModal();
+  openModal('modal-hidden-bosses');
 }
 
 function renderBossList() {
@@ -1644,7 +1754,7 @@ function renderBossList() {
     `;
     const emptyRestoreBtn = $('btn-empty-restore-hidden');
     if (emptyRestoreBtn) {
-      emptyRestoreBtn.addEventListener('click', restoreAllHiddenBosses);
+      emptyRestoreBtn.addEventListener('click', openHiddenBossesModal);
     }
     const emptyBtn = $('btn-empty-add');
     if (emptyBtn) {
@@ -2826,6 +2936,14 @@ function bindEvents() {
   });
 
   // Topbar notice controls (Host / Editor edit, Viewer read-only)
+  const syncNoticePreviewFromInputs = () => {
+    applyNoticeStylesToInputs(
+      $('sel-notice-font-size').value,
+      $('inp-notice-color').value,
+      $('chk-notice-bold').checked
+    );
+  };
+
   const saveNoticeFromInputs = async (showSavedToast = true) => {
     if (!canEditShared()) {
       requireEditPermissionToast();
@@ -2836,6 +2954,7 @@ function bindEvents() {
       text: $('inp-notice-text').value,
       fontSize: $('sel-notice-font-size').value,
       color: $('inp-notice-color').value,
+      bold: $('chk-notice-bold').checked,
     });
     renderNoticeBox(true);
     const saved = await persistSharedChange({ preserveBossNotifyDefaults: true });
@@ -2845,13 +2964,16 @@ function bindEvents() {
   };
 
   $('sel-notice-font-size').addEventListener('change', () => {
-    applyNoticeStylesToInputs($('sel-notice-font-size').value, $('inp-notice-color').value);
+    syncNoticePreviewFromInputs();
     if (canEditShared()) saveNoticeFromInputs(false);
   });
 
-  $('inp-notice-color').addEventListener('input', () => {
-    applyNoticeStylesToInputs($('sel-notice-font-size').value, $('inp-notice-color').value);
+  $('chk-notice-bold').addEventListener('change', () => {
+    syncNoticePreviewFromInputs();
+    if (canEditShared()) saveNoticeFromInputs(false);
   });
+
+  $('inp-notice-color').addEventListener('input', syncNoticePreviewFromInputs);
 
   $('inp-notice-color').addEventListener('change', () => {
     if (canEditShared()) saveNoticeFromInputs(false);
@@ -2869,7 +2991,38 @@ function bindEvents() {
   });
 
   // Toolbar filter, group-by-type, sort, restore-hidden (Personal view settings — works in viewer too)
-  $('btn-restore-hidden-bosses').addEventListener('click', restoreAllHiddenBosses);
+  $('btn-restore-hidden-bosses').addEventListener('click', openHiddenBossesModal);
+
+  $('hidden-bosses-list').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-restore-boss-id]');
+    if (!btn) return;
+    restoreHiddenBossIds([btn.dataset.restoreBossId]);
+  });
+
+  $('hidden-bosses-list').addEventListener('change', (e) => {
+    if (e.target.matches('[data-hidden-select]')) {
+      updateHiddenSelectedCount();
+    }
+  });
+
+  $('btn-hidden-select-all').addEventListener('click', () => {
+    const boxes = [...$('hidden-bosses-list').querySelectorAll('[data-hidden-select]')];
+    if (!boxes.length) return;
+    const allChecked = boxes.every((cb) => cb.checked);
+    boxes.forEach((cb) => {
+      cb.checked = !allChecked;
+    });
+    updateHiddenSelectedCount();
+  });
+
+  $('btn-restore-selected-hidden').addEventListener('click', () => {
+    const ids = [
+      ...$('hidden-bosses-list').querySelectorAll('[data-hidden-select]:checked'),
+    ].map((cb) => cb.dataset.hiddenSelect);
+    restoreHiddenBossIds(ids);
+  });
+
+  $('btn-restore-all-hidden').addEventListener('click', restoreAllHiddenBosses);
 
   $('boss-filter-pills').addEventListener('click', (e) => {
     const btn = e.target.closest('[data-boss-filter]');

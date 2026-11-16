@@ -697,15 +697,24 @@ test('Weekly fixed field bosses compute KST windows, skip maintenance reset, and
 
 test('Shared notice styling and personal bossViewPrefs (favorite/hidden) merge cleanly', () => {
   const ref = Date.parse('2026-11-16T23:18:00+09:00');
-  assert.deepEqual(sanitizeNoticeObject(null), { text: '', fontSize: 14, color: '#ffffff' });
-  assert.deepEqual(sanitizeNoticeObject({ text: '오늘 집결', fontSize: 99, color: '#FFCC00' }), {
-    text: '오늘 집결',
-    fontSize: 28,
-    color: '#ffcc00',
+  assert.deepEqual(sanitizeNoticeObject(null), {
+    text: '',
+    fontSize: 12,
+    color: '#ffffff',
+    bold: false,
   });
+  assert.deepEqual(
+    sanitizeNoticeObject({ text: '오늘 집결', fontSize: 99, color: '#FFCC00', bold: true }),
+    {
+      text: '오늘 집결',
+      fontSize: 28,
+      color: '#ffcc00',
+      bold: true,
+    }
+  );
 
   const shared = createDefaultSharedState(ref);
-  shared.notice = { text: '21시 집결!', fontSize: 16, color: '#38bdf8' };
+  shared.notice = { text: '21시 집결!', fontSize: 16, color: '#38bdf8', bold: true };
 
   const local = sanitizeLocalPrefs({
     bossViewPrefs: {
@@ -717,12 +726,17 @@ test('Shared notice styling and personal bossViewPrefs (favorite/hidden) merge c
   });
 
   const merged = mergeSharedAndLocalState(shared, local, ref);
-  assert.deepEqual(merged.notice, { text: '21시 집결!', fontSize: 16, color: '#38bdf8' });
+  assert.deepEqual(merged.notice, { text: '21시 집결!', fontSize: 16, color: '#38bdf8', bold: true });
   assert.equal(merged.bossViewPrefs['barkadion-05'].sabato.favorite, true);
   assert.equal(merged.bossViewPrefs['barkadion-05'].remanent.hidden, true);
 
   // Viewer prefs do not leak into shared state extraction, while notice updates preserve cleanly
   const extracted = extractSharedStateFromAppState(merged, { previousSharedState: shared, nowMs: ref });
-  assert.deepEqual(extracted.notice, { text: '21시 집결!', fontSize: 16, color: '#38bdf8' });
+  assert.deepEqual(extracted.notice, {
+    text: '21시 집결!',
+    fontSize: 16,
+    color: '#38bdf8',
+    bold: true,
+  });
   assert.equal(extracted.bossViewPrefs, undefined);
 });
