@@ -663,6 +663,25 @@ input[type='number']:focus {
   gap: 8px;
 }
 
+.world-schedule-inline {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  padding: 7px 10px;
+  gap: 8px;
+}
+
+.world-inline-times {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.world-inline-times strong {
+  color: #cbd5e1;
+  font-variant-numeric: tabular-nums;
+}
+
 .world-schedule-top {
   display: flex;
   align-items: center;

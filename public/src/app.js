@@ -924,10 +924,19 @@ function buildWorldBossCardHtml(boss, nowMs) {
       ? `개별 알림 (${effectiveOffsets.map(formatOffsetLabel).join(', ') || '없음'})`
       : `공통 알림 (${effectiveOffsets.length}개)`;
 
-  const nextAfterStr =
+  const fixedTimesText = fixedTimes.length ? fixedTimes.join(', ') : '미설정';
+  const viewLeftHtml =
+    win.isActiveNow && Number.isFinite(win.nextStartMs)
+      ? `고정 <strong>${escapeHtml(fixedTimesText)}</strong> · 유지 <strong>${activeMin}분</strong>`
+      : `고정 출현 시각 <strong>${escapeHtml(fixedTimesText)}</strong>`;
+  const viewRightHtml =
+    win.isActiveNow && Number.isFinite(win.nextStartMs)
+      ? `이후 다음 출현: <strong>${escapeHtml(formatRelativeDayLabel(win.nextStartMs, nowMs))} ${formatTimeHHMM(win.nextStartMs)}</strong>`
+      : `유지 <strong>${activeMin}분</strong>`;
+  const metaHintHtml =
     win.isActiveNow && Number.isFinite(win.nextStartMs)
       ? `다음 고정 출현: <strong>${escapeHtml(formatRelativeDayLabel(win.nextStartMs, nowMs))} ${formatTimeHHMM(win.nextStartMs)}</strong>`
-      : `고정 출현 · 유지 <strong>${activeMin}분</strong>`;
+      : `출현 정각부터 ${activeMin}분간 유지`;
 
   return `
     <article class="boss-card status-${status}" data-boss-card="${escapeHtml(boss.id)}">
@@ -995,45 +1004,27 @@ function buildWorldBossCardHtml(boss, nowMs) {
         <div class="progress-fill" data-progress style="width: ${progress}%"></div>
       </div>
 
-      <div class="world-schedule-box">
-        <div class="world-schedule-top">
-          <span class="param-label">고정 출현 시각</span>
-          ${
-            editable
-              ? `<div class="param-inputs">
-                  <span>유지</span>
-                  <input
-                    type="number"
-                    min="1"
-                    max="720"
-                    value="${activeMin}"
-                    data-inline-param="activeMin"
-                    data-shared-edit
-                    data-boss-id="${escapeHtml(boss.id)}"
-                    aria-label="${escapeHtml(boss.name)} 출현 유지 분"
-                  />
-                  <span>분</span>
-                </div>`
-              : `<span class="world-duration-label">유지 ${activeMin}분</span>`
-          }
-        </div>
-        <div class="world-time-pills">
-          ${
-            fixedTimes.length
-              ? fixedTimes.map((t) => `<span class="world-time-pill">${escapeHtml(t)}</span>`).join('')
-              : `<span class="empty-muted">등록된 고정 시간이 없습니다.</span>`
-          }
-        </div>
-      </div>
-
-      <div class="cycle-preview" data-cycle-preview>
-        <span>${nextAfterStr}</span>
-      </div>
-
       ${
         editable
-          ? `<div class="card-meta-row">
-              <span class="hint-text">출현 정각부터 ${activeMin}분간 유지</span>
+          ? `<div class="world-schedule-box world-schedule-inline">
+              <span class="world-inline-times">고정 출현 시각 <strong>${escapeHtml(fixedTimesText)}</strong></span>
+              <div class="param-inputs">
+                <span>유지</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="720"
+                  value="${activeMin}"
+                  data-inline-param="activeMin"
+                  data-shared-edit
+                  data-boss-id="${escapeHtml(boss.id)}"
+                  aria-label="${escapeHtml(boss.name)} 출현 유지 분"
+                />
+                <span>분</span>
+              </div>
+            </div>
+            <div class="card-meta-row">
+              <span class="hint-text">${metaHintHtml}</span>
               <button
                 type="button"
                 class="link-btn"
@@ -1042,7 +1033,10 @@ function buildWorldBossCardHtml(boss, nowMs) {
                 data-boss-id="${escapeHtml(boss.id)}"
               >${escapeHtml(notifySummary)}</button>
             </div>`
-          : ''
+          : `<div class="cycle-preview" data-cycle-preview>
+              <span>${viewLeftHtml}</span>
+              <span>${viewRightHtml}</span>
+            </div>`
       }
     </article>
   `;
