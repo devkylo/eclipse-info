@@ -52,6 +52,7 @@ export const PRESET_WORLD_BOSS_SPECS = [
   {
     id: 'kraka',
     bossType: 'world',
+    level: 60,
     name: '크라카',
     fixedTimes: ['12:00', '20:00'],
     activeDurationSec: 3600, // 1시간 출현 유지
@@ -61,6 +62,7 @@ export const PRESET_WORLD_BOSS_SPECS = [
   {
     id: 'everhart',
     bossType: 'world',
+    level: 80,
     name: '에버하르트',
     fixedTimes: ['12:00', '20:00'],
     activeDurationSec: 3600, // 1시간 출현 유지
@@ -73,6 +75,7 @@ export const PRESET_FIELD_BOSS_SPECS = [
   {
     id: 'remanent',
     bossType: 'field',
+    level: 40,
     name: '레마넌트',
     killDurationSec: 60,
     respawnDurationSec: 8 * 3600,
@@ -83,6 +86,7 @@ export const PRESET_FIELD_BOSS_SPECS = [
   {
     id: 'venatoria',
     bossType: 'field',
+    level: 50,
     name: '베나토리아',
     killDurationSec: 60,
     respawnDurationSec: 8 * 3600,
@@ -93,6 +97,7 @@ export const PRESET_FIELD_BOSS_SPECS = [
   {
     id: 'sharelna',
     bossType: 'field',
+    level: 60,
     name: '샤렐나',
     killDurationSec: 60,
     respawnDurationSec: 10 * 3600,
@@ -103,6 +108,7 @@ export const PRESET_FIELD_BOSS_SPECS = [
   {
     id: 'calibrax',
     bossType: 'field',
+    level: 70,
     name: '칼리브락스',
     killDurationSec: 60,
     respawnDurationSec: 12 * 3600,
@@ -113,6 +119,7 @@ export const PRESET_FIELD_BOSS_SPECS = [
   {
     id: 'arkandar',
     bossType: 'field',
+    level: 75,
     name: '아르칸다르',
     killDurationSec: null,
     respawnDurationSec: 12 * 3600,
@@ -124,6 +131,20 @@ export const PRESET_FIELD_BOSS_SPECS = [
 
 // Kept for compatibility
 export const PRESET_BOSS_SPECS = PRESET_FIELD_BOSS_SPECS;
+
+const PRESET_LEVEL_BY_ID = new Map(
+  [...PRESET_WORLD_BOSS_SPECS, ...PRESET_FIELD_BOSS_SPECS].map((s) => [s.id, s.level])
+);
+const PRESET_LEVEL_BY_NAME = new Map(
+  [...PRESET_WORLD_BOSS_SPECS, ...PRESET_FIELD_BOSS_SPECS].map((s) => [s.name, s.level])
+);
+
+export function normalizeBossLevel(val) {
+  if (val === null || val === undefined || val === '') return null;
+  const n = Math.round(Number(val));
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
 
 export function createDefaultSettings() {
   return {
@@ -259,6 +280,7 @@ export function createDefaultWorldBosses() {
   return PRESET_WORLD_BOSS_SPECS.map((spec) => ({
     id: spec.id,
     bossType: 'world',
+    level: spec.level,
     name: spec.name,
     fixedTimes: [...spec.fixedTimes],
     activeDurationSec: spec.activeDurationSec,
@@ -281,6 +303,7 @@ export function createDefaultFieldBosses(referenceMs = Date.now()) {
   return PRESET_FIELD_BOSS_SPECS.map((spec) => ({
     id: spec.id,
     bossType: 'field',
+    level: spec.level,
     name: spec.name,
     fixedTimes: [],
     activeDurationSec: 3600,
@@ -305,7 +328,7 @@ export function createDefaultBosses(referenceMs = Date.now()) {
 
 export function createDefaultState(referenceMs = Date.now()) {
   return {
-    version: 5,
+    version: 6,
     hasSelectedInitialServer: false,
     activeServerId: DEFAULT_SERVER_ID,
     serverTabs: [{ id: DEFAULT_SERVER_ID, favorite: true }],
@@ -1064,21 +1087,22 @@ export function formatScheduleForShare(bosses, nowMs = Date.now(), serverName = 
   const header = `${title} (${formatTimeHHMM(nowMs)} 기준)`;
 
   const lines = sorted.map((boss) => {
+    const lvPrefix = boss.level ? `Lv.${boss.level} ` : '';
     if (isWorldBoss(boss)) {
       const win = getWorldBossWindow(boss, nowMs);
       const timesText = normalizeFixedTimes(boss.fixedTimes).join(', ') || '미설정';
       const durText = formatDurationKorean(getEffectiveActiveSec(boss));
       if (win.isActiveNow) {
         const remText = formatCountdownText(win.windowEndMs - nowMs).replace(/ 후$/, ' 남음');
-        return `• [월드] ${boss.name} → 출현 중! (~${formatTimeHHMM(win.windowEndMs)}, ${remText}) [고정 ${timesText} · ${durText}]`;
+        return `• [월드] ${lvPrefix}${boss.name} → 출현 중! (~${formatTimeHHMM(win.windowEndMs)}, ${remText}) [고정 ${timesText} · ${durText}]`;
       }
       if (Number.isFinite(win.nextStartMs)) {
         const dayLabel = formatRelativeDayLabel(win.nextStartMs, nowMs);
         const dayPrefix = dayLabel === '오늘' ? '' : `${dayLabel} `;
         const diffText = formatCountdownText(win.nextStartMs - nowMs);
-        return `• [월드] ${boss.name} → ${dayPrefix}${formatTimeHHMM(win.nextStartMs)} (${diffText}) [고정 ${timesText} · ${durText}]`;
+        return `• [월드] ${lvPrefix}${boss.name} → ${dayPrefix}${formatTimeHHMM(win.nextStartMs)} (${diffText}) [고정 ${timesText} · ${durText}]`;
       }
-      return `• [월드] ${boss.name} → 시간 미설정`;
+      return `• [월드] ${lvPrefix}${boss.name} → 시간 미설정`;
     }
 
     const dayLabel = formatRelativeDayLabel(boss.nextSpawnMs, nowMs);
@@ -1090,7 +1114,7 @@ export function formatScheduleForShare(bosses, nowMs = Date.now(), serverName = 
         ? '미설정(0분)'
         : formatDurationKorean(getEffectiveKillSec(boss));
     const respawnText = formatDurationKorean(getEffectiveRespawnSec(boss));
-    return `• [필드] ${boss.name} → ${dayPrefix}${timeStr} (${diffText}) [처치 ${killText} / 리스폰 ${respawnText}]`;
+    return `• [필드] ${lvPrefix}${boss.name} → ${dayPrefix}${timeStr} (${diffText}) [처치 ${killText} / 리스폰 ${respawnText}]`;
   });
 
   return [header, ...lines].join('\n');
@@ -1101,12 +1125,18 @@ function sanitizeBossArray(rawBosses, fallbackBosses, fallbackNowMs, isLegacyV1,
   const cleaned = source
     .filter((b) => b && typeof b === 'object' && typeof b.name === 'string' && b.name.trim().length > 0)
     .map((b, idx) => {
+      const id = typeof b.id === 'string' && b.id.trim() ? b.id : `boss-${idx}-${Date.now()}`;
+      const name = b.name.trim();
       const bossType =
         b.bossType === 'world' || b.bossType === 'field'
           ? b.bossType
           : Array.isArray(b.fixedTimes) && b.fixedTimes.length > 0
             ? 'world'
             : 'field';
+      const level =
+        b.level === undefined
+          ? (PRESET_LEVEL_BY_ID.get(id) ?? PRESET_LEVEL_BY_NAME.get(name) ?? null)
+          : normalizeBossLevel(b.level);
       const fixedTimes = bossType === 'world' ? normalizeFixedTimes(b.fixedTimes) : [];
       const activeDurationSec = Math.max(60, Math.round(Number(b.activeDurationSec) || 3600));
 
@@ -1121,9 +1151,10 @@ function sanitizeBossArray(rawBosses, fallbackBosses, fallbackNowMs, isLegacyV1,
         anchorType !== 'manual' && Number.isFinite(Number(b.anchorTimeMs)) ? Number(b.anchorTimeMs) : null;
 
       return {
-        id: typeof b.id === 'string' && b.id.trim() ? b.id : `boss-${idx}-${Date.now()}`,
+        id,
         bossType,
-        name: b.name.trim(),
+        level,
+        name,
         fixedTimes,
         activeDurationSec,
         killDurationSec,
@@ -1223,7 +1254,7 @@ export function sanitizeState(raw, fallbackNowMs = Date.now()) {
     );
     const migratedLogs = Array.isArray(raw.alertLogs) ? raw.alertLogs.slice(0, 50) : [];
     return {
-      version: 5,
+      version: 6,
       hasSelectedInitialServer: Array.isArray(raw.bosses),
       activeServerId: DEFAULT_SERVER_ID,
       serverTabs: [{ id: DEFAULT_SERVER_ID, favorite: true }],
@@ -1280,7 +1311,7 @@ export function sanitizeState(raw, fallbackNowMs = Date.now()) {
       : orderedTabs[0].id;
 
   return {
-    version: 5,
+    version: 6,
     hasSelectedInitialServer: Boolean(raw.hasSelectedInitialServer),
     activeServerId,
     serverTabs: orderedTabs,

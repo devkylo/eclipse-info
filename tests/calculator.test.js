@@ -27,6 +27,7 @@ import {
   formatCountdown,
   formatRelativeDayLabel,
   formatScheduleForShare,
+  normalizeBossLevel,
   parseTimeString,
   buildTimestampOnDay,
   getMostRecentWednesdayResetMs,
@@ -55,7 +56,7 @@ test('ALL_SERVERS defines 36 servers and 바르카디온 05 initializes 2 world 
 
   const ref = makeRefTime(16, 28, 30);
   const state = createDefaultState(ref);
-  assert.equal(state.version, 5);
+  assert.equal(state.version, 6);
   assert.equal(state.hasSelectedInitialServer, false);
   assert.equal(state.activeServerId, 'barkadion-05');
   assert.equal(state.serverTabs.length, 1);
@@ -65,21 +66,28 @@ test('ALL_SERVERS defines 36 servers and 바르카디온 05 initializes 2 world 
 
   const byName = Object.fromEntries(bosses.map((b) => [b.name, b]));
   assert.equal(byName['크라카'].bossType, 'world');
+  assert.equal(byName['크라카'].level, 60);
   assert.deepEqual(byName['크라카'].fixedTimes, ['12:00', '20:00']);
   assert.equal(byName['크라카'].activeDurationSec, 3600);
 
   assert.equal(byName['에버하르트'].bossType, 'world');
+  assert.equal(byName['에버하르트'].level, 80);
   assert.deepEqual(byName['에버하르트'].fixedTimes, ['12:00', '20:00']);
   assert.equal(byName['에버하르트'].activeDurationSec, 3600);
 
   assert.equal(byName['레마넌트'].bossType, 'field');
+  assert.equal(byName['레마넌트'].level, 40);
   assert.equal(byName['레마넌트'].killDurationSec, 60);
   assert.equal(byName['레마넌트'].respawnDurationSec, 8 * 3600);
   assert.equal(byName['레마넌트'].nextSpawnMs, makeRefTime(16, 20, 0));
 
+  assert.equal(byName['베나토리아'].level, 50);
   assert.equal(byName['베나토리아'].nextSpawnMs, makeRefTime(16, 31, 0));
+  assert.equal(byName['샤렐나'].level, 60);
   assert.equal(byName['샤렐나'].nextSpawnMs, makeRefTime(18, 57, 0));
+  assert.equal(byName['칼리브락스'].level, 70);
   assert.equal(byName['칼리브락스'].nextSpawnMs, makeRefTime(20, 49, 0));
+  assert.equal(byName['아르칸다르'].level, 75);
   assert.equal(byName['아르칸다르'].killDurationSec, null);
   assert.equal(getEffectiveKillSec(byName['아르칸다르']), 0);
   assert.equal(byName['아르칸다르'].nextSpawnMs, makeRefTime(20, 56, 0));
@@ -264,17 +272,56 @@ test('sanitizeState upgrades v1/v2/v3 data into v4 and injects world bosses safe
   };
 
   const upgraded = sanitizeState(v3, ref);
-  assert.equal(upgraded.version, 5);
+  assert.equal(upgraded.version, 6);
   const bosses = getActiveServerData(upgraded).bosses;
   assert.equal(bosses.length, 3); // 크라카, 에버하르트 + 레마넌트
   assert.equal(bosses[0].bossType, 'world');
+  assert.equal(bosses[0].level, 60);
   assert.equal(bosses[1].bossType, 'world');
+  assert.equal(bosses[1].level, 80);
   assert.equal(bosses[2].bossType, 'field');
+  assert.equal(bosses[2].level, 40);
+  assert.equal(bosses[2].nextSpawnMs, ref);
+
+  // Upgrading v5 saved data backfills preset levels without overwriting custom spawn times
+  const customSpawn = ref + 3600 * 1000;
+  const v5 = {
+    version: 5,
+    hasSelectedInitialServer: true,
+    activeServerId: 'barkadion-05',
+    serverTabs: [{ id: 'barkadion-05', favorite: true }],
+    servers: {
+      'barkadion-05': {
+        bosses: [
+          { id: 'kraka', name: '크라카', bossType: 'world', fixedTimes: ['12:00', '20:00'], activeDurationSec: 3600 },
+          { id: 'venatoria', name: '베나토리아', bossType: 'field', respawnDurationSec: 28800, nextSpawnMs: customSpawn },
+          { id: 'custom-boss', name: '벨카르', bossType: 'field', respawnDurationSec: 54000, nextSpawnMs: customSpawn },
+        ],
+        alertLogs: [],
+      },
+    },
+  };
+  const upgradedV5 = sanitizeState(v5, ref);
+  assert.equal(upgradedV5.version, 6);
+  const v5Bosses = getActiveServerData(upgradedV5).bosses;
+  assert.equal(v5Bosses.find((b) => b.name === '크라카').level, 60);
+  assert.equal(v5Bosses.find((b) => b.name === '베나토리아').level, 50);
+  assert.equal(v5Bosses.find((b) => b.name === '베나토리아').nextSpawnMs, customSpawn);
+  assert.equal(v5Bosses.find((b) => b.name === '벨카르').level, null);
 
   // Share text formats both world and field cleanly
   const share = formatScheduleForShare(bosses, ref, '바르카디온 05');
-  assert.match(share, /\[월드\] 크라카/);
-  assert.match(share, /\[필드\] 레마넌트/);
+  assert.match(share, /\[월드\] Lv\.60 크라카/);
+  assert.match(share, /\[필드\] Lv\.40 레마넌트/);
+});
+
+test('normalizeBossLevel validates positive integer levels cleanly', () => {
+  assert.equal(normalizeBossLevel('60'), 60);
+  assert.equal(normalizeBossLevel(80), 80);
+  assert.equal(normalizeBossLevel(''), null);
+  assert.equal(normalizeBossLevel(0), null);
+  assert.equal(normalizeBossLevel(-5), null);
+  assert.equal(normalizeBossLevel(null), null);
 });
 
 test('formatting and parsing helpers work accurately', () => {

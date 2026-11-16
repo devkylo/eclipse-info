@@ -228,9 +228,17 @@ export function renderScheduleCanvas(bosses, nowMs = Date.now(), options = {}) {
       ctx.textAlign = 'center';
       ctx.fillText(typeTag, textX + tagW / 2, y + 22);
 
-      // Boss Name
-      const nameX = textX + tagW + 8;
+      // Boss Level + Name
+      let nameX = textX + tagW + 8;
       ctx.textAlign = 'left';
+      if (boss.level) {
+        const lvStr = `Lv.${boss.level}`;
+        ctx.fillStyle = '#fcd34d';
+        ctx.font = `700 13px ${FONT_SANS}`;
+        ctx.fillText(lvStr, nameX, y + 23);
+        nameX += ctx.measureText(lvStr).width + 6;
+      }
+
       ctx.fillStyle = '#f8fafc';
       ctx.font = `700 17px ${FONT_SANS}`;
       const nameStr = boss.name;
@@ -240,7 +248,7 @@ export function renderScheduleCanvas(bosses, nowMs = Date.now(), options = {}) {
       if (boss.memo) {
         ctx.fillStyle = '#94a3b8';
         ctx.font = `500 12px ${FONT_SANS}`;
-        const maxMemoW = Math.max(40, 230 - nameW);
+        const maxMemoW = Math.max(40, 210 - nameW);
         ctx.fillText(truncateText(ctx, `· ${boss.memo}`, maxMemoW), nameX + nameW + 8, y + 24);
       }
 

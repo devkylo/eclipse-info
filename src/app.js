@@ -14,6 +14,7 @@ import {
   createDefaultBosses,
   isWorldBoss,
   isBossRedAlert,
+  normalizeBossLevel,
   normalizeFixedTimes,
   getEffectiveActiveSec,
   getWorldBossWindow,
@@ -481,7 +482,7 @@ function renderSpotlight(nowMs, force = false) {
   const status = getBossStatus(boss, nowMs);
   const isRed = isBossRedAlert(boss, nowMs);
   const targetMs = getBossDisplaySpawnMs(boss, nowMs);
-  const key = `${activeMeta.id}:${boss.id}:${boss.bossType}:${targetMs}:${status}:${boss.killDurationSec}:${boss.respawnDurationSec}`;
+  const key = `${activeMeta.id}:${boss.id}:${boss.bossType}:${boss.level || ''}:${targetMs}:${status}:${boss.killDurationSec}:${boss.respawnDurationSec}`;
 
   const cdDisplay = getCountdownDisplayForBoss(boss, nowMs);
   if (!force && key === currentSpotlightKey) {
@@ -550,6 +551,7 @@ function renderSpotlight(nowMs, force = false) {
       </div>
       <div class="spotlight-name">
         <span class="boss-dot" style="background:${escapeHtml(boss.color || '#3b82f6')}"></span>
+        ${boss.level ? `<span class="boss-lv" style="font-size:16px;">Lv.${boss.level}</span>` : ''}
         <span>${escapeHtml(boss.name)}</span>
       </div>
       <div class="spotlight-sub">${subHtml}</div>
@@ -608,6 +610,7 @@ function buildWorldBossCardHtml(boss, nowMs) {
           <div>
             <div class="title-row">
               <span class="pill type-badge-world">월드</span>
+              ${boss.level ? `<span class="boss-lv">Lv.${boss.level}</span>` : ''}
               <h3 class="boss-name">${escapeHtml(boss.name)}</h3>
             </div>
             ${boss.memo ? `<div class="boss-memo">${escapeHtml(boss.memo)}</div>` : ''}
@@ -737,6 +740,7 @@ function buildFieldBossCardHtml(boss, nowMs) {
           <div>
             <div class="title-row">
               <span class="pill type-badge-field">필드</span>
+              ${boss.level ? `<span class="boss-lv">Lv.${boss.level}</span>` : ''}
               <h3 class="boss-name">${escapeHtml(boss.name)}</h3>
             </div>
             ${boss.memo ? `<div class="boss-memo">${escapeHtml(boss.memo)}</div>` : ''}
@@ -1363,6 +1367,7 @@ function openBossModal(bossId) {
     ? `[${serverMeta.name}] ${boss.name} 설정 수정`
     : `[${serverMeta.name}] 새 보스 추가`;
   $('boss-form-id').value = boss ? boss.id : '';
+  $('boss-form-level').value = boss && boss.level ? String(boss.level) : '';
   $('boss-form-name').value = boss ? boss.name : '';
   $('boss-form-color').value = boss ? boss.color : '#3b82f6';
   $('boss-form-memo').value = boss ? boss.memo || '' : '';
@@ -2103,6 +2108,7 @@ function bindEvents() {
   $('form-boss').addEventListener('submit', (e) => {
     e.preventDefault();
     const id = $('boss-form-id').value.trim();
+    const level = normalizeBossLevel($('boss-form-level').value);
     const name = $('boss-form-name').value.trim();
     if (!name) return;
 
@@ -2122,6 +2128,7 @@ function bindEvents() {
         ...(existingIdx !== -1 ? bosses[existingIdx] : {}),
         id: id || `boss-${Date.now()}`,
         bossType: 'world',
+        level,
         name,
         color: $('boss-form-color').value || '#a855f7',
         memo: $('boss-form-memo').value.trim(),
@@ -2174,6 +2181,7 @@ function bindEvents() {
     const baseBoss = {
       id: id || `boss-${Date.now()}`,
       bossType: 'field',
+      level,
       name,
       color: $('boss-form-color').value || '#3b82f6',
       memo: $('boss-form-memo').value.trim(),
