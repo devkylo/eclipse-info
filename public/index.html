@@ -55,6 +55,16 @@
             <button id="btn-open-auth" class="btn btn-secondary" type="button" title="호스트 로그인 및 편집 권한 관리">
               🔑 권한 관리
             </button>
+            <a
+              id="btn-contact-inquiry"
+              class="btn btn-secondary"
+              href="https://open.kakao.com/o/sIsDdQRg"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="오픈카톡 문의하기"
+            >
+              💬 문의 : 윤회
+            </a>
             <button id="btn-open-maintenance" class="btn btn-warning" type="button" title="수요일 정기점검 리셋 및 시간 설정">
               🔄 정기점검 리셋
             </button>
@@ -610,8 +620,12 @@
               <input id="chk-image-countdown" type="checkbox" checked />
               <span>남은 시간 배지 함께 표시</span>
             </label>
+            <label class="toggle-chip">
+              <input id="chk-image-fullsize" type="checkbox" />
+              <span>원본 크기로 크게 보기 (스크롤)</span>
+            </label>
           </div>
-          <div class="schedule-preview-wrap">
+          <div id="schedule-preview-wrap" class="schedule-preview-wrap is-fit-view">
             <img id="schedule-preview-img" class="schedule-preview-img" alt="보스 출현 예상 시간표 이미지" />
           </div>
           <div class="modal-footer">

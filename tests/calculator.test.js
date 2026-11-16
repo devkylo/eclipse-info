@@ -50,6 +50,7 @@ import {
   mergeSharedAndLocalState,
   extractSharedStateFromAppState,
 } from '../public/src/calculator.js';
+import { renderScheduleCanvas } from '../public/src/schedule-image.js';
 
 // Fixed reference timestamp: 2026-11-16 16:28:30 KST (Monday)
 function kstMs(day, hh, mm = 0, ss = 0) {
@@ -739,4 +740,84 @@ test('Shared notice styling and personal bossViewPrefs (favorite/hidden) merge c
     bold: true,
   });
   assert.equal(extracted.bossViewPrefs, undefined);
+});
+
+test('renderScheduleCanvas renders all 14 preset bosses and prevents long text horizontal collisions', () => {
+  const ref = kstMs(17, 0, 22, 0);
+  const shared = createDefaultSharedState(ref);
+  const bosses = shared.servers['barkadion-05'].bosses;
+  assert.equal(bosses.length, 14);
+
+  const drawnCalls = [];
+  const noop = () => {};
+  const makeGradient = () => ({ addColorStop: noop });
+  const prevDoc = globalThis.document;
+  globalThis.document = {
+    createElement(tag) {
+      assert.equal(tag, 'canvas');
+      const canvasObj = {
+        width: 0,
+        height: 0,
+        getContext() {
+          return {
+            fillStyle: '',
+            strokeStyle: '',
+            lineWidth: 1,
+            font: '',
+            textBaseline: '',
+            textAlign: 'left',
+            scale: noop,
+            createLinearGradient: makeGradient,
+            fillRect: noop,
+            beginPath: noop,
+            moveTo: noop,
+            lineTo: noop,
+            quadraticCurveTo: noop,
+            closePath: noop,
+            fill: noop,
+            stroke: noop,
+            save: noop,
+            clip: noop,
+            restore: noop,
+            measureText(str) {
+              return { width: String(str).length * 10 };
+            },
+            fillText(text, x, y) {
+              drawnCalls.push({ text: String(text), x, y, align: this.textAlign });
+            },
+          };
+        },
+      };
+      return canvasObj;
+    },
+  };
+
+  try {
+    const canvas = renderScheduleCanvas(bosses, ref, {
+      showCountdown: true,
+      serverName: '바르카디온 05',
+    });
+    assert.equal(canvas.width, 1520);
+    assert.equal(canvas.height, 2432);
+    assert.ok(drawnCalls.some((c) => c.text === '보스 출현 예상 시간표'));
+    assert.ok(drawnCalls.some((c) => c.text.includes('총 14종 보스')));
+    assert.ok(drawnCalls.some((c) => c.text === '에버하르트'));
+    assert.ok(drawnCalls.some((c) => c.text === '샤를레'));
+
+    drawnCalls.length = 0;
+    const longCustom = [
+      {
+        ...bosses[0],
+        name: '아주긴커스텀월드보스이름테스트용입니다',
+        memo: '이것은아주긴메모테스트문자열입니다잘려야합니다',
+        fixedTimes: ['01:00', '04:00', '08:00', '12:00', '16:00', '20:00', '23:00'],
+      },
+    ];
+    renderScheduleCanvas(longCustom, ref, { showCountdown: false, serverName: '바르카디온 05' });
+    const leftTexts = drawnCalls.filter((c) => c.align === 'left' && c.y > 80 && c.y < 140);
+    assert.ok(leftTexts.some((c) => c.text.includes('…')));
+  } finally {
+    if (prevDoc === undefined) delete globalThis.document;
+    else globalThis.document = prevDoc;
+  }
 });

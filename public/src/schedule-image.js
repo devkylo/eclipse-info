@@ -242,7 +242,7 @@ export function renderScheduleCanvas(bosses, nowMs = Date.now(), options = {}) {
       ctx.textAlign = 'center';
       ctx.fillText(typeTag, textX + tagW / 2, y + 22);
 
-      // Boss Level + Name
+      // Boss Level + compute line texts before drawing to prevent horizontal overlap
       let nameX = textX + tagW + 8;
       ctx.textAlign = 'left';
       if (boss.level) {
@@ -253,20 +253,6 @@ export function renderScheduleCanvas(bosses, nowMs = Date.now(), options = {}) {
         nameX += ctx.measureText(lvStr).width + 6;
       }
 
-      ctx.fillStyle = '#f8fafc';
-      ctx.font = `700 17px ${FONT_SANS}`;
-      const nameStr = boss.name;
-      ctx.fillText(nameStr, nameX, y + 23);
-
-      const nameW = ctx.measureText(nameStr).width;
-      if (boss.memo) {
-        ctx.fillStyle = '#94a3b8';
-        ctx.font = `500 12px ${FONT_SANS}`;
-        const maxMemoW = Math.max(40, 210 - nameW);
-        ctx.fillText(truncateText(ctx, `· ${boss.memo}`, maxMemoW), nameX + nameW + 8, y + 24);
-      }
-
-      // Line 2 + Right Time
       const rightEdge = padX + cardW - 16;
       let subLine = '';
       let timeText = '';
@@ -315,9 +301,36 @@ export function renderScheduleCanvas(bosses, nowMs = Date.now(), options = {}) {
         badgeText = vis.label || formatCountdownText(boss.nextSpawnMs - nowMs);
       }
 
+      ctx.font = `800 19px ${FONT_MONO}`;
+      const rightTimeW = ctx.measureText(timeText).width;
+      let rightBadgeW = 0;
+      if (showCountdown) {
+        ctx.font = `700 11.5px ${FONT_SANS}`;
+        rightBadgeW = ctx.measureText(badgeText).width + 18;
+      }
+      const rightClearX = rightEdge - Math.max(rightTimeW, rightBadgeW) - 16;
+
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#f8fafc';
+      ctx.font = `700 17px ${FONT_SANS}`;
+      const maxNameW = Math.max(80, rightClearX - nameX);
+      const nameStr = truncateText(ctx, boss.name, maxNameW);
+      ctx.fillText(nameStr, nameX, y + 23);
+
+      const nameW = ctx.measureText(nameStr).width;
+      if (boss.memo) {
+        const availMemoW = rightClearX - (nameX + nameW + 8);
+        if (availMemoW >= 36) {
+          ctx.fillStyle = '#94a3b8';
+          ctx.font = `500 12px ${FONT_SANS}`;
+          ctx.fillText(truncateText(ctx, `· ${boss.memo}`, availMemoW), nameX + nameW + 8, y + 24);
+        }
+      }
+
       ctx.fillStyle = isRed ? '#fca5a5' : '#94a3b8';
       ctx.font = `500 12px ${FONT_SANS}`;
-      ctx.fillText(subLine, textX, y + 47);
+      const maxSubW = Math.max(160, rightClearX - textX);
+      ctx.fillText(truncateText(ctx, subLine, maxSubW), textX, y + 47);
 
       ctx.textAlign = 'right';
       ctx.fillStyle = vis.timeColor;

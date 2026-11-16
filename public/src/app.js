@@ -2472,6 +2472,41 @@ function openQuickTimeModal(bossId) {
   $('quick-time-input').select();
 }
 
+function updateSchedulePreviewSizing() {
+  const wrapEl = $('schedule-preview-wrap');
+  const imgEl = $('schedule-preview-img');
+  const fullChk = $('chk-image-fullsize');
+  const modalEl = $('modal-schedule-image');
+  if (!wrapEl || !imgEl || !fullChk || !modalEl) return;
+
+  const isFullSize = Boolean(fullChk.checked);
+  wrapEl.classList.toggle('is-fit-view', !isFullSize);
+  wrapEl.classList.toggle('is-fullsize-view', isFullSize);
+  imgEl.title = isFullSize
+    ? '클릭하면 창 크기에 맞춰 한눈에 보기'
+    : '클릭하면 원본 크기로 크게 보기 (스크롤)';
+
+  if (isFullSize) {
+    imgEl.style.maxHeight = '';
+    wrapEl.scrollTop = 0;
+    return;
+  }
+
+  const cardEl = modalEl.querySelector('.modal-card');
+  if (!cardEl || modalEl.classList.contains('hidden')) {
+    imgEl.style.maxHeight = '';
+    return;
+  }
+
+  const headerH = cardEl.querySelector('.modal-header')?.offsetHeight || 50;
+  const statusH = $('schedule-copy-status')?.offsetHeight || 38;
+  const optionsH = cardEl.querySelector('.schedule-image-options')?.offsetHeight || 28;
+  const footerH = cardEl.querySelector('.modal-footer')?.offsetHeight || 42;
+  const chromeTotal = headerH + statusH + optionsH + footerH + 88;
+  const availH = Math.max(180, Math.floor(window.innerHeight * 0.92 - chromeTotal));
+  imgEl.style.maxHeight = `${availH}px`;
+}
+
 async function refreshScheduleImage(tryCopy = true) {
   const statusEl = $('schedule-copy-status');
   const imgEl = $('schedule-preview-img');
@@ -2480,6 +2515,7 @@ async function refreshScheduleImage(tryCopy = true) {
 
   statusEl.className = 'copy-status-banner';
   statusEl.textContent = '시간표 이미지를 생성하는 중...';
+  updateSchedulePreviewSizing();
 
   try {
     const canvas = renderScheduleCanvas(getActiveBosses(), getNowMs(), {
@@ -2514,6 +2550,8 @@ async function refreshScheduleImage(tryCopy = true) {
   } catch (err) {
     statusEl.className = 'copy-status-banner warn';
     statusEl.textContent = `이미지 생성 실패: ${err?.message || '알 수 없는 오류'}`;
+  } finally {
+    updateSchedulePreviewSizing();
   }
 }
 
@@ -2718,12 +2756,28 @@ function bindEvents() {
   });
 
   $('btn-copy-schedule').addEventListener('click', async () => {
+    $('chk-image-fullsize').checked = false;
     openModal('modal-schedule-image');
+    updateSchedulePreviewSizing();
     await refreshScheduleImage(true);
   });
 
   $('chk-image-countdown').addEventListener('change', () => {
     refreshScheduleImage(false);
+  });
+
+  $('chk-image-fullsize').addEventListener('change', updateSchedulePreviewSizing);
+
+  $('schedule-preview-img').addEventListener('click', () => {
+    const fullChk = $('chk-image-fullsize');
+    fullChk.checked = !fullChk.checked;
+    updateSchedulePreviewSizing();
+  });
+
+  window.addEventListener('resize', () => {
+    if (!$('modal-schedule-image').classList.contains('hidden')) {
+      updateSchedulePreviewSizing();
+    }
   });
 
   $('btn-recopy-schedule-img').addEventListener('click', async () => {
@@ -2743,6 +2797,7 @@ function bindEvents() {
       statusEl.textContent =
         '⚠️ 이 브라우저/환경에서는 클립보드 이미지 쓰기가 차단되어 있습니다. [PNG 저장]이나 우클릭 복사를 이용해 주세요.';
     }
+    updateSchedulePreviewSizing();
   });
 
   $('btn-download-schedule-img').addEventListener('click', () => {
