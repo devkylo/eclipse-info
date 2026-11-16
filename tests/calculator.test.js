@@ -37,7 +37,13 @@ import {
   applyManualMaintenanceReset,
   applyScheduledWednesdayReset,
   sanitizeState,
-} from '../src/calculator.js';
+  createDefaultSharedState,
+  createDefaultLocalPrefs,
+  sanitizeSharedState,
+  sanitizeLocalPrefs,
+  mergeSharedAndLocalState,
+  extractSharedStateFromAppState,
+} from '../public/src/calculator.js';
 
 // Fixed reference timestamp: 2026-11-16 16:28:30 local time (Monday)
 function makeRefTime(hh = 16, mm = 28, ss = 30) {
@@ -420,4 +426,55 @@ test('Wednesday maintenance scheduling, auto-reset, manual modes, and notice par
     wed1100
   );
   assert.equal(pinnedOnly.find((b) => b.name === '레마넌트').nextSpawnMs, wed0800);
+});
+
+test('shared state and local prefs merge cleanly and preserve unshown shared servers', () => {
+  const ref = makeRefTime(16, 28, 0);
+  let shared = createDefaultSharedState(ref);
+  shared.servers['heskarion-01'] = {
+    bosses: [
+      {
+        id: 'custom-h1',
+        bossType: 'field',
+        level: 80,
+        name: '벨카르',
+        respawnDurationSec: 15 * 3600,
+        nextSpawnMs: ref + 3600 * 1000,
+        notifyEnabled: true,
+        color: '#ef4444',
+      },
+    ],
+  };
+  shared = sanitizeSharedState(shared, ref);
+
+  let local = createDefaultLocalPrefs();
+  local.activeServerId = 'barkadion-05';
+  local.settings.soundEnabled = false;
+  local.bossNotifyOverrides = {
+    'barkadion-05': {
+      remanent: { notifyEnabled: false },
+    },
+  };
+  local = sanitizeLocalPrefs(local);
+
+  let merged = mergeSharedAndLocalState(shared, local, ref);
+  assert.equal(merged.settings.soundEnabled, false);
+  assert.equal(merged.servers['barkadion-05'].bosses.find((b) => b.id === 'remanent').notifyEnabled, false);
+  assert.equal(merged.servers['heskarion-01'].bosses[0].name, '벨카르');
+
+  // Closing a personal tab with preserveServers keeps shared data untouched
+  merged = addOrSelectServer(merged, 'heskarion-01', 'auto', ref);
+  merged = removeServerTab(merged, 'heskarion-01', { preserveServers: true });
+  assert.equal(merged.serverTabs.some((t) => t.id === 'heskarion-01'), false);
+
+  const extracted = extractSharedStateFromAppState(merged, {
+    previousSharedState: shared,
+    nowMs: ref,
+    preserveBossNotifyDefaults: true,
+    updatedBy: '총무',
+  });
+  assert.equal(extracted.servers['heskarion-01'].bosses[0].name, '벨카르');
+  // Preserve shared notifyEnabled default even when editor locally muted remanent bell
+  assert.equal(extracted.servers['barkadion-05'].bosses.find((b) => b.id === 'remanent').notifyEnabled, true);
+  assert.equal(extracted.updatedBy, '총무');
 });

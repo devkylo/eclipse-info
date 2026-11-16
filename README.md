@@ -36,23 +36,31 @@ MMORPG **《이클립스: 더 어웨이크닝》**의 서버별 보스 출현 �
 - 매주 수요일 **08:00** (기본값, 수정 가능)이 지나면 필드 보스 시간이 서버 오픈 시점(`08:00` 첫 출현, 시간 경과 시 `08:00 + 처치시간 + 리스폰`)으로 자동 리셋됩니다. (월드 보스는 고정 일정 유지)
 - 점검 시간이 연장된 경우 상단 **🔄 정기점검 리셋** 버튼에서 공지 시간 문구(`05:00 ~ 09:30` 등)를 붙여넣거나 직접 입력해 일괄 리셋할 수 있습니다.
 
+### 공용 시간표 동기화 & 호스트 / 편집 권한 관리
+- **공용 서버 동기화**: 보스 목록·레벨·출현/처치 시간·수요일 정기점검 설정은 Netlify Functions (`/api/shared-state`, `/api/auth`) + Netlify Blobs(또는 로컬 실행 시 `data/shared-state.json`, `data/auth.json`)에 공용 저장되어 모든 방문자가 동일한 최신 시간표를 볼 수 있습니다.
+- **개인 설정 분리**: 내 기본 접속 서버, 즐겨찾기, 알림 ON/OFF(보스별 벨 아이콘 포함), 알림음/TTS, 서버 시계 보정은 각 방문자 브라우저의 `localStorage`에 별도 저장됩니다.
+- **메인 호스트 & 권한 발급 (방식 A)**:
+  - 일반 방문자는 로그인 없이 **보기 전용**으로 시간표를 확인하고 본인 알림만 설정할 수 있습니다.
+  - 최초 접속 시 **🔑 호스트 초기 설정**에서 마스터 비밀번호를 설정(또는 Netlify 환경변수 `HOST_ADMIN_KEY` 지정)하면 메인 호스트로 인증됩니다.
+  - 호스트는 사람별 이름(별명)으로 **편집 코드(`EC-XXXX-XXXX`) / 원클릭 초대 링크(`?edit=...`)** 를 발급하고, 필요 시 언제든 즉시 회수할 수 있습니다.
+
 ## Netlify(`app.netlify.com`) 배포 방법 (GitHub 연동)
 
-프로젝트 루트에 [netlify.toml](./netlify.toml) (`publish = "."`)이 설정되어 있습니다.
+프로젝트 루트에 [netlify.toml](./netlify.toml) (`publish = "public"`) 및 [netlify/functions](./netlify/functions) 서버리스 함수가 설정되어 있습니다.
 
 1. 이 폴더 내용을 GitHub 저장소에 push 합니다.
 2. [app.netlify.com](https://app.netlify.com/)에서 **Add new site → Import an existing project → GitHub** 선택 후 저장소를 연결합니다.
 3. 설정 확인:
-   - **Build command**: *(비워둠)*
-   - **Publish directory**: `.`
-4. **Deploy site**를 누르면 바로 배포됩니다. 정적 호스팅 환경에서는 각 사용자의 브라우저 `localStorage`에 서버별 데이터가 자동 저장됩니다.
+   - **Publish directory**: `public` (`netlify.toml` 자동 인식)
+   - *(선택)* **Environment variables**: `HOST_ADMIN_KEY` 를 설정하면 웹 UI 대신 Netlify 환경변수로 호스트 비밀번호를 고정할 수 있습니다.
+4. **Deploy site**를 누르면 공용 보스 시간표와 권한 관리 기능이 함께 배포됩니다.
 
 ## 로컬 실행 방법
 
 ```powershell
 node server.js --open
 ```
-또는 폴더 내 `start.bat`을 더블클릭하면 `http://127.0.0.1:3737`에서 실행되며 로컬 `data/bosses.json`에도 함께 저장됩니다.
+또는 폴더 내 `start.bat`을 더블클릭하면 `http://127.0.0.1:3737`에서 실행되며 로컬 `data/` 폴더에 저장됩니다.
 
 ## 테스트 실행
 

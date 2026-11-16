@@ -50,9 +50,26 @@ import {
   resetFieldBossesForMaintenance,
   applyManualMaintenanceReset,
   applyScheduledWednesdayReset,
-  sanitizeState,
+  createDefaultSharedState,
+  createDefaultLocalPrefs,
+  sanitizeSharedState,
+  sanitizeLocalPrefs,
+  mergeSharedAndLocalState,
+  extractSharedStateFromAppState,
 } from './calculator.js';
-import { loadState, saveState } from './storage.js';
+import {
+  loadAuthSession,
+  saveAuthSession,
+  clearAuthSession,
+  consumeInviteCodeFromUrl,
+  getLegacyLocalBackup,
+  loadLocalPrefs,
+  saveLocalPrefs,
+  fetchSharedBootstrap,
+  saveSharedStateRemote,
+  fetchAuthStatus,
+  postAuthAction,
+} from './storage.js';
 import {
   unlockAudioOnGesture,
   playAlertSound,
@@ -67,10 +84,24 @@ import {
   copyPngBlobToClipboard,
 } from './schedule-image.js';
 
-let appState = createDefaultState(Date.now());
+let sharedState = createDefaultSharedState(Date.now());
+let localPrefs = createDefaultLocalPrefs();
+let appState = mergeSharedAndLocalState(sharedState, localPrefs, Date.now());
+let apiAvailable = false;
+let authState = {
+  configured: false,
+  envHostLocked: false,
+  role: 'viewer',
+  label: null,
+  revoked: false,
+  editors: [],
+};
 const firedAlertKeys = new Set();
 let tickWorker = null;
 let fallbackIntervalId = null;
+let syncIntervalId = null;
+let lastSyncFetchMs = 0;
+let isSavingShared = false;
 let editingBossCustomOffsets = [];
 let editingWorldFixedTimes = [];
 let currentSpotlightKey = '';
@@ -80,6 +111,270 @@ let latestScheduleUrl = '';
 let selectedWorldFilter = 'all';
 
 const $ = (id) => document.getElementById(id);
+
+function canEditShared() {
+  return !apiAvailable || authState.role === 'host' || authState.role === 'editor';
+}
+
+function requireEditPermissionToast() {
+  showToast(
+    '보기 전용 모드',
+    '상단 [🔑 호스트/권한] 버튼을 눌러 호스트 비밀번호 또는 편집 코드를 입력해 주세요.',
+    true
+  );
+}
+
+function syncLocalPrefsFromAppState() {
+  const {
+    autoWednesdayReset: _ignoredAuto,
+    maintenanceEndTime: _ignoredMaint,
+    ...personalSettings
+  } = appState.settings;
+  const serverAlertLogs = {};
+  for (const [sid, entry] of Object.entries(appState.servers || {})) {
+    if (Array.isArray(entry?.alertLogs) && entry.alertLogs.length > 0) {
+      serverAlertLogs[sid] = entry.alertLogs.slice(0, 50);
+    }
+  }
+  localPrefs = sanitizeLocalPrefs({
+    ...localPrefs,
+    hasSelectedInitialServer: appState.hasSelectedInitialServer,
+    activeServerId: appState.activeServerId,
+    serverTabs: appState.serverTabs,
+    settings: personalSettings,
+    serverAlertLogs,
+  });
+  saveLocalPrefs(localPrefs);
+}
+
+function persistLocalOnly() {
+  syncLocalPrefsFromAppState();
+}
+
+function isEditingModalOrInlineOpen() {
+  const active = document.activeElement;
+  if (active && active.hasAttribute && active.hasAttribute('data-inline-param')) {
+    return true;
+  }
+  return ['modal-boss', 'modal-quick-time', 'modal-maintenance'].some(
+    (id) => !$(id).classList.contains('hidden')
+  );
+}
+
+async function persistSharedChange(options = {}) {
+  syncLocalPrefsFromAppState();
+
+  const nowMs = getNowMs();
+  const nextShared = extractSharedStateFromAppState(appState, {
+    previousSharedState: sharedState,
+    nowMs,
+    preserveBossNotifyDefaults: Boolean(options.preserveBossNotifyDefaults),
+    updatedBy: authState.label || '로컬',
+  });
+
+  if (!apiAvailable) {
+    sharedState = nextShared;
+    await saveSharedStateRemote(nextShared, nextShared.revision);
+    updateAuthAndSyncUI();
+    return true;
+  }
+
+  if (!canEditShared()) {
+    if (!options.silent) requireEditPermissionToast();
+    return false;
+  }
+
+  isSavingShared = true;
+  try {
+    const res = await saveSharedStateRemote(nextShared, sharedState.revision, {
+      force: Boolean(options.force),
+    });
+
+    if (res.ok && res.sharedState) {
+      sharedState = res.sharedState;
+      appState = mergeSharedAndLocalState(sharedState, localPrefs, getNowMs());
+      updateAuthAndSyncUI();
+      return true;
+    }
+
+    if (res.conflict && res.latestState) {
+      sharedState = res.latestState;
+      appState = mergeSharedAndLocalState(sharedState, localPrefs, getNowMs());
+      applyScheduledWednesdayResetInMemory(getNowMs());
+      rolloverAllBosses(getNowMs(), false);
+      currentSpotlightKey = '';
+      renderServerTabs();
+      renderGlobalNotifyControls();
+      renderBossList();
+      updateAuthAndSyncUI();
+      if (!options.silent) {
+        showToast('동기화 충돌', res.message || '다른 권한자의 최신 변경을 불러왔습니다.', true);
+      }
+      return false;
+    }
+
+    if (res.unauthorized) {
+      clearAuthSession();
+      authState = {
+        ...authState,
+        role: 'viewer',
+        label: null,
+        revoked: Boolean(res.revoked),
+        editors: [],
+      };
+      if (!options.silent) {
+        showToast(
+          res.revoked ? '편집 권한 회수됨' : '인증 필요',
+          res.message || '수정 권한이 없어 보기 전용으로 전환됩니다.',
+          true
+        );
+      }
+      await refreshFromServer(true);
+      updateAuthAndSyncUI();
+      renderBossList();
+      return false;
+    }
+
+    if (!options.silent) {
+      showToast('저장 실패', res.message || '공용 서버 저장에 실패했습니다.', true);
+    }
+    return false;
+  } finally {
+    isSavingShared = false;
+  }
+}
+
+async function refreshFromServer(silent = false) {
+  if (isSavingShared) return;
+  lastSyncFetchMs = Date.now();
+  const prevRev = sharedState.revision;
+  const prevRole = authState.role;
+  const prevConfigured = authState.configured;
+
+  const boot = await fetchSharedBootstrap();
+  apiAvailable = boot.apiAvailable;
+  if (!apiAvailable) {
+    if (!silent) {
+      showToast('오프라인 상태', '서버에 연결할 수 없어 로컬 캐시를 표시 중입니다.', true);
+    }
+    updateAuthAndSyncUI();
+    return;
+  }
+
+  const nextShared = boot.sharedState;
+  const nextAuth = boot.auth;
+
+  if (nextAuth.revoked && prevRole !== 'viewer') {
+    showToast('편집 권한 회수됨', '호스트가 권한을 회수하여 보기 전용 모드로 전환되었습니다.', true);
+  }
+
+  authState = {
+    ...authState,
+    configured: Boolean(nextAuth.configured),
+    envHostLocked: Boolean(nextAuth.envHostLocked),
+    role: nextAuth.role || 'viewer',
+    label: nextAuth.label || null,
+    revoked: Boolean(nextAuth.revoked),
+    ...(nextAuth.role !== 'host' ? { editors: [] } : {}),
+  };
+
+  if (silent && isEditingModalOrInlineOpen() && nextShared.revision !== prevRev) {
+    // Avoid disrupting user mid-edit; apply after modal closes / next refresh
+    updateAuthAndSyncUI();
+    return;
+  }
+
+  const changed = nextShared.revision !== prevRev || authState.role !== prevRole || authState.configured !== prevConfigured;
+  sharedState = nextShared;
+
+  if (changed || !silent) {
+    const nowMs = getNowMs();
+    appState = mergeSharedAndLocalState(sharedState, localPrefs, nowMs);
+    applyScheduledWednesdayResetInMemory(nowMs);
+    rolloverAllBosses(nowMs, false);
+    currentSpotlightKey = '';
+    renderServerTabs();
+    renderGlobalNotifyControls();
+    renderBossList();
+    updateAuthAndSyncUI();
+    updateTickDisplays(nowMs);
+  }
+
+  if (!silent) {
+    showToast(
+      '동기화 완료',
+      `${sharedState.updatedBy || '공용'} 시간표(v${sharedState.revision})를 불러왔습니다.`
+    );
+  }
+}
+
+function applyScheduledWednesdayResetInMemory(nowMs) {
+  const res = applyScheduledWednesdayReset(appState, nowMs);
+  if (res.didReset) {
+    appState = res.state;
+  }
+  return res.didReset;
+}
+
+function updateAuthAndSyncUI() {
+  const editable = canEditShared();
+  const shell = document.querySelector('.app-shell');
+  if (shell) shell.classList.toggle('is-view-only', !editable);
+
+  const roleBadge = $('sync-role-badge');
+  const metaBadge = $('sync-meta-badge');
+  const btnAuth = $('btn-open-auth');
+  const btnRefresh = $('btn-sync-refresh');
+
+  if (!apiAvailable) {
+    roleBadge.textContent = '로컬 단독 모드';
+    roleBadge.className = 'pill pill-muted';
+    metaBadge.classList.add('hidden');
+    btnAuth.textContent = '🔑 로컬 모드';
+    btnAuth.className = 'btn btn-ghost btn-sm';
+    btnAuth.disabled = true;
+    btnRefresh.classList.add('hidden');
+  } else {
+    btnAuth.disabled = false;
+    btnRefresh.classList.remove('hidden');
+
+    if (authState.role === 'host') {
+      roleBadge.textContent = '👑 메인 호스트';
+      roleBadge.className = 'pill pill-amber';
+      btnAuth.textContent = '👑 권한 관리';
+      btnAuth.className = 'btn btn-warning btn-sm';
+    } else if (authState.role === 'editor') {
+      roleBadge.textContent = `🔑 편집자 · ${authState.label || '권한자'}`;
+      roleBadge.className = 'pill pill-green';
+      btnAuth.textContent = `🔑 ${authState.label || '편집자'}`;
+      btnAuth.className = 'btn btn-success btn-sm';
+    } else {
+      roleBadge.textContent = authState.configured ? '👀 보기 전용' : '⚠️ 호스트 미설정';
+      roleBadge.className = authState.configured ? 'pill pill-blue' : 'pill pill-amber';
+      btnAuth.textContent = authState.configured ? '🔑 호스트/권한' : '👑 호스트 초기 설정';
+      btnAuth.className = authState.configured ? 'btn btn-secondary btn-sm' : 'btn btn-warning btn-sm';
+    }
+
+    if (sharedState.updatedBy && Number.isFinite(sharedState.updatedAtMs)) {
+      metaBadge.textContent = `최근 수정: ${sharedState.updatedBy} · ${formatTimeHHMM(sharedState.updatedAtMs)}`;
+      metaBadge.classList.remove('hidden');
+    } else {
+      metaBadge.classList.add('hidden');
+    }
+  }
+
+  $('btn-open-maintenance').disabled = !editable;
+  $('btn-add-boss').disabled = !editable;
+  $('btn-reset-defaults').disabled = !editable;
+  $('inp-import-json').disabled = !editable;
+  $('lbl-import-json').classList.toggle('is-disabled', !editable);
+
+  const legacyBox = $('settings-legacy-upload-box');
+  if (legacyBox) {
+    const showLegacy = apiAvailable && authState.role === 'host' && Boolean(getLegacyLocalBackup());
+    legacyBox.classList.toggle('hidden', !showLegacy);
+  }
+}
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -265,10 +560,14 @@ function renderServerTabs() {
 
 function selectServer(serverId, seedMode = 'auto') {
   const nowMs = getNowMs();
+  const existedOnServer = Boolean(sharedState.servers?.[serverId]);
   appState = addOrSelectServer(appState, serverId, seedMode, nowMs);
   rolloverAllBosses(nowMs, false);
   currentSpotlightKey = '';
-  saveState(appState, true);
+  persistLocalOnly();
+  if (!existedOnServer && canEditShared() && (appState.servers?.[serverId]?.bosses?.length || 0) > 0) {
+    persistSharedChange({ silent: true, preserveBossNotifyDefaults: true });
+  }
   renderServerTabs();
   renderBossList();
   renderAlertLogs();
@@ -335,6 +634,7 @@ function renderServerPickerModal() {
                 const tab = tabMap.get(srv.id);
                 const isAdded = Boolean(tab);
                 const isActive = srv.id === activeId && appState.hasSelectedInitialServer;
+                const isSharedServer = Boolean(sharedState.servers?.[srv.id]?.bosses?.length);
                 return `
                   <div class="server-chip-card ${isActive ? 'is-active' : isAdded ? 'is-added' : ''}">
                     <button
@@ -348,7 +648,13 @@ function renderServerPickerModal() {
                       class="server-chip-name-btn"
                       data-picker-select="${escapeHtml(srv.id)}"
                     >${escapeHtml(srv.name)}</button>
-                    ${srv.hasPreset ? '<span class="pill pill-green" title="기본 보스 포함">기본</span>' : ''}
+                    ${
+                      srv.hasPreset
+                        ? '<span class="pill pill-green" title="기본 보스 포함">기본</span>'
+                        : isSharedServer
+                          ? '<span class="pill pill-blue" title="공용 보스 시간표 등록됨">공유됨</span>'
+                          : ''
+                    }
                   </div>
                 `;
               })
@@ -482,7 +788,9 @@ function renderSpotlight(nowMs, force = false) {
   const status = getBossStatus(boss, nowMs);
   const isRed = isBossRedAlert(boss, nowMs);
   const targetMs = getBossDisplaySpawnMs(boss, nowMs);
-  const key = `${activeMeta.id}:${boss.id}:${boss.bossType}:${boss.level || ''}:${targetMs}:${status}:${boss.killDurationSec}:${boss.respawnDurationSec}`;
+  const editable = canEditShared();
+  const disAttr = editable ? '' : 'disabled';
+  const key = `${editable ? '1' : '0'}:${activeMeta.id}:${boss.id}:${boss.bossType}:${boss.level || ''}:${targetMs}:${status}:${boss.killDurationSec}:${boss.respawnDurationSec}`;
 
   const cdDisplay = getCountdownDisplayForBoss(boss, nowMs);
   if (!force && key === currentSpotlightKey) {
@@ -518,7 +826,7 @@ function renderSpotlight(nowMs, force = false) {
       subHtml = `고정 출현 시간을 설정해 주세요.`;
     }
     actionsHtml = `
-      <button class="btn btn-secondary btn-sm" type="button" data-action="edit-boss" data-boss-id="${escapeHtml(boss.id)}">
+      <button class="btn btn-secondary btn-sm" type="button" data-action="edit-boss" data-shared-edit data-boss-id="${escapeHtml(boss.id)}" ${disAttr}>
         시간 설정
       </button>
     `;
@@ -533,10 +841,10 @@ function renderSpotlight(nowMs, force = false) {
       · 이후 다음 젠 ${escapeHtml(afterDay)} ${formatTimeHHMM(afterNextMs)}
     `;
     actionsHtml = `
-      <button class="btn btn-primary btn-sm" type="button" data-action="expected-cut" data-boss-id="${escapeHtml(boss.id)}">
+      <button class="btn btn-primary btn-sm" type="button" data-action="expected-cut" data-shared-edit data-boss-id="${escapeHtml(boss.id)}" ${disAttr}>
         예상 컷 (→ ${formatTimeHHMM(afterNextMs)})
       </button>
-      <button class="btn btn-success btn-sm" type="button" data-action="killed-now" data-boss-id="${escapeHtml(boss.id)}">
+      <button class="btn btn-success btn-sm" type="button" data-action="killed-now" data-shared-edit data-boss-id="${escapeHtml(boss.id)}" ${disAttr}>
         지금 컷! (+${escapeHtml(respawnLabel)})
       </button>
     `;
@@ -567,6 +875,8 @@ function renderSpotlight(nowMs, force = false) {
 }
 
 function buildWorldBossCardHtml(boss, nowMs) {
+  const editable = canEditShared();
+  const disAttr = editable ? '' : 'disabled';
   const status = getBossStatus(boss, nowMs);
   const badge = getStatusBadgeInfo(status, true);
   const win = getWorldBossWindow(boss, nowMs);
@@ -623,14 +933,16 @@ function buildWorldBossCardHtml(boss, nowMs) {
             class="icon-btn ${boss.notifyEnabled ? '' : 'muted'}"
             data-action="toggle-boss-notify"
             data-boss-id="${escapeHtml(boss.id)}"
-            title="${boss.notifyEnabled ? '이 보스 알림 끄기' : '이 보스 알림 켜기'}"
+            title="${boss.notifyEnabled ? '내 브라우저에서 이 보스 알림 끄기' : '내 브라우저에서 이 보스 알림 켜기'}"
           >${boss.notifyEnabled ? '🔔' : '🔕'}</button>
           <button
             type="button"
             class="icon-btn"
             data-action="edit-boss"
+            data-shared-edit
             data-boss-id="${escapeHtml(boss.id)}"
-            title="고정 시간 / 알림 수정"
+            title="${editable ? '고정 시간 / 알림 수정' : '편집 권한 필요'}"
+            ${disAttr}
           >✏️</button>
         </div>
       </div>
@@ -640,8 +952,10 @@ function buildWorldBossCardHtml(boss, nowMs) {
           type="button"
           class="spawn-target-btn"
           data-action="edit-boss"
+          data-shared-edit
           data-boss-id="${escapeHtml(boss.id)}"
-          title="클릭하여 월드 보스 고정 출현 시간 편집"
+          title="${editable ? '클릭하여 월드 보스 고정 출현 시간 편집' : '보기 전용 모드'}"
+          ${disAttr}
         >
           <div class="spawn-day">
             <span data-spawn-day>${escapeHtml(mainDayLabel)}</span>
@@ -672,8 +986,10 @@ function buildWorldBossCardHtml(boss, nowMs) {
               max="720"
               value="${activeMin}"
               data-inline-param="activeMin"
+              data-shared-edit
               data-boss-id="${escapeHtml(boss.id)}"
               aria-label="${escapeHtml(boss.name)} 출현 유지 분"
+              ${disAttr}
             />
             <span>분</span>
           </div>
@@ -697,7 +1013,9 @@ function buildWorldBossCardHtml(boss, nowMs) {
           type="button"
           class="link-btn"
           data-action="edit-boss"
+          data-shared-edit
           data-boss-id="${escapeHtml(boss.id)}"
+          ${disAttr}
         >${escapeHtml(notifySummary)}</button>
       </div>
     </article>
@@ -705,6 +1023,8 @@ function buildWorldBossCardHtml(boss, nowMs) {
 }
 
 function buildFieldBossCardHtml(boss, nowMs) {
+  const editable = canEditShared();
+  const disAttr = editable ? '' : 'disabled';
   const status = getBossStatus(boss, nowMs);
   const badge = getStatusBadgeInfo(status, false);
   const diffMs = boss.nextSpawnMs - nowMs;
@@ -753,14 +1073,16 @@ function buildFieldBossCardHtml(boss, nowMs) {
             class="icon-btn ${boss.notifyEnabled ? '' : 'muted'}"
             data-action="toggle-boss-notify"
             data-boss-id="${escapeHtml(boss.id)}"
-            title="${boss.notifyEnabled ? '이 보스 알림 끄기' : '이 보스 알림 켜기'}"
+            title="${boss.notifyEnabled ? '내 브라우저에서 이 보스 알림 끄기' : '내 브라우저에서 이 보스 알림 켜기'}"
           >${boss.notifyEnabled ? '🔔' : '🔕'}</button>
           <button
             type="button"
             class="icon-btn"
             data-action="edit-boss"
+            data-shared-edit
             data-boss-id="${escapeHtml(boss.id)}"
-            title="상세 설정 / 알림 수정"
+            title="${editable ? '상세 설정 / 알림 수정' : '편집 권한 필요'}"
+            ${disAttr}
           >✏️</button>
         </div>
       </div>
@@ -770,8 +1092,10 @@ function buildFieldBossCardHtml(boss, nowMs) {
           type="button"
           class="spawn-target-btn"
           data-action="quick-time"
+          data-shared-edit
           data-boss-id="${escapeHtml(boss.id)}"
-          title="클릭하여 출현/처치 시간 입력"
+          title="${editable ? '클릭하여 출현/처치 시간 입력' : '보기 전용 모드'}"
+          ${disAttr}
         >
           <div class="spawn-day">
             <span data-spawn-day>${escapeHtml(dayLabel)}</span>
@@ -805,8 +1129,10 @@ function buildFieldBossCardHtml(boss, nowMs) {
               placeholder="미정"
               value="${killMin}"
               data-inline-param="killMin"
+              data-shared-edit
               data-boss-id="${escapeHtml(boss.id)}"
               aria-label="${escapeHtml(boss.name)} 처치 소요 분"
+              ${disAttr}
             />
             <span>분</span>
             <input
@@ -816,8 +1142,10 @@ function buildFieldBossCardHtml(boss, nowMs) {
               placeholder="0"
               value="${killSec}"
               data-inline-param="killSec"
+              data-shared-edit
               data-boss-id="${escapeHtml(boss.id)}"
               aria-label="${escapeHtml(boss.name)} 처치 소요 초"
+              ${disAttr}
             />
             <span>초</span>
           </div>
@@ -832,8 +1160,10 @@ function buildFieldBossCardHtml(boss, nowMs) {
               max="168"
               value="${respawnHr}"
               data-inline-param="respawnHr"
+              data-shared-edit
               data-boss-id="${escapeHtml(boss.id)}"
               aria-label="${escapeHtml(boss.name)} 리스폰 시간"
+              ${disAttr}
             />
             <span>시간</span>
             <input
@@ -842,8 +1172,10 @@ function buildFieldBossCardHtml(boss, nowMs) {
               max="59"
               value="${respawnMin}"
               data-inline-param="respawnMin"
+              data-shared-edit
               data-boss-id="${escapeHtml(boss.id)}"
               aria-label="${escapeHtml(boss.name)} 리스폰 분"
+              ${disAttr}
             />
             <span>분</span>
           </div>
@@ -860,25 +1192,31 @@ function buildFieldBossCardHtml(boss, nowMs) {
           type="button"
           class="btn btn-xs btn-primary"
           data-action="expected-cut"
+          data-shared-edit
           data-boss-id="${escapeHtml(boss.id)}"
           data-next-cut-btn
+          ${disAttr}
         >예상 컷 (→ ${formatTimeHHMM(afterNextMs)})</button>
         <button
           type="button"
           class="btn btn-xs btn-success"
           data-action="killed-now"
+          data-shared-edit
           data-boss-id="${escapeHtml(boss.id)}"
           data-kill-now-btn
+          ${disAttr}
         >지금 컷! (+${escapeHtml(respawnLabel)})</button>
         <button
           type="button"
           class="btn btn-xs btn-secondary"
           data-action="quick-time"
+          data-shared-edit
           data-boss-id="${escapeHtml(boss.id)}"
+          ${disAttr}
         >시간 입력</button>
         ${
           boss.previousState
-            ? `<button type="button" class="btn btn-xs btn-ghost" data-action="undo-time" data-boss-id="${escapeHtml(boss.id)}">되돌리기</button>`
+            ? `<button type="button" class="btn btn-xs btn-ghost" data-action="undo-time" data-shared-edit data-boss-id="${escapeHtml(boss.id)}" ${disAttr}>되돌리기</button>`
             : ''
         }
       </div>
@@ -889,7 +1227,9 @@ function buildFieldBossCardHtml(boss, nowMs) {
             type="checkbox"
             ${boss.autoRollover ? 'checked' : ''}
             data-action="toggle-auto-rollover"
+            data-shared-edit
             data-boss-id="${escapeHtml(boss.id)}"
+            ${disAttr}
           />
           <span>자동 다음 주기 갱신</span>
         </label>
@@ -897,7 +1237,9 @@ function buildFieldBossCardHtml(boss, nowMs) {
           type="button"
           class="link-btn"
           data-action="edit-boss"
+          data-shared-edit
           data-boss-id="${escapeHtml(boss.id)}"
+          ${disAttr}
         >${escapeHtml(notifySummary)}</button>
       </div>
     </article>
@@ -933,14 +1275,23 @@ function renderBossList() {
 
   if (!sorted.length) {
     const activeMeta = getServerMeta(appState.activeServerId);
+    const editable = canEditShared();
     listEl.innerHTML = `
       <div class="panel" style="text-align: center; padding: 32px;">
         <p style="margin:0 0 12px; color: var(--text-muted);">${escapeHtml(activeMeta.name)} 서버에 표시할 보스가 없습니다.</p>
-        <button class="btn btn-primary" id="btn-empty-add" type="button">+ 보스 추가하기</button>
+        <button class="btn btn-primary" id="btn-empty-add" type="button" ${editable ? '' : 'disabled'}>+ 보스 추가하기</button>
       </div>
     `;
     const emptyBtn = $('btn-empty-add');
-    if (emptyBtn) emptyBtn.addEventListener('click', () => openBossModal(null));
+    if (emptyBtn) {
+      emptyBtn.addEventListener('click', () => {
+        if (!canEditShared()) {
+          requireEditPermissionToast();
+          return;
+        }
+        openBossModal(null);
+      });
+    }
     renderSpotlight(nowMs, true);
     renderServerTabs();
     return;
@@ -1208,8 +1559,11 @@ function handleTick() {
 
   const { anyRolled, activeRolled } = rolloverAllBosses(nowMs, true);
 
-  if (wednesdayResetRan || anyLogsChanged || anyRolled) {
-    saveState(appState);
+  if (anyLogsChanged) {
+    persistLocalOnly();
+  }
+  if ((wednesdayResetRan || anyRolled) && canEditShared()) {
+    persistSharedChange({ preserveBossNotifyDefaults: true, silent: true });
   }
   if (activeRolled) {
     renderBossList();
@@ -1244,8 +1598,21 @@ function startTickEngine() {
     fallbackIntervalId = setInterval(handleTick, 1000);
   }
 
+  if (!syncIntervalId) {
+    syncIntervalId = setInterval(() => {
+      if (apiAvailable && !document.hidden) {
+        refreshFromServer(true);
+      }
+    }, 30000);
+  }
+
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) handleTick();
+    if (!document.hidden) {
+      handleTick();
+      if (apiAvailable && Date.now() - lastSyncFetchMs > 5000) {
+        refreshFromServer(true);
+      }
+    }
   });
 }
 
@@ -1257,7 +1624,7 @@ function addGlobalOffset(offsetSec) {
   appState.settings.globalNotifyOffsetsSec = Array.from(next).sort((a, b) => b - a);
   renderGlobalNotifyControls();
   renderBossList();
-  saveState(appState);
+  persistLocalOnly();
 }
 
 function removeGlobalOffset(offsetSec) {
@@ -1266,7 +1633,7 @@ function removeGlobalOffset(offsetSec) {
   );
   renderGlobalNotifyControls();
   renderBossList();
-  saveState(appState);
+  persistLocalOnly();
 }
 
 function openModal(id) {
@@ -1276,9 +1643,97 @@ function openModal(id) {
 function closeModal(id) {
   if (id === 'modal-server-picker' && !appState.hasSelectedInitialServer) {
     appState.hasSelectedInitialServer = true;
-    saveState(appState);
+    persistLocalOnly();
   }
   $(id).classList.add('hidden');
+}
+
+function formatShortDateTime(ms) {
+  if (!Number.isFinite(Number(ms))) return '미사용';
+  const d = new Date(Number(ms));
+  return `${d.getMonth() + 1}/${d.getDate()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+function renderEditorsList() {
+  const listEl = $('auth-editors-list');
+  const countEl = $('auth-editors-count');
+  const editors = Array.isArray(authState.editors) ? authState.editors : [];
+  countEl.textContent = `${editors.length}명`;
+
+  if (!editors.length) {
+    listEl.innerHTML = `<div class="empty-muted">아직 발급된 편집 권한이 없습니다.</div>`;
+    return;
+  }
+
+  listEl.innerHTML = editors
+    .map(
+      (ed) => `
+      <div class="editor-item">
+        <div class="editor-info">
+          <div class="editor-name-row">
+            <span>🔑 ${escapeHtml(ed.label)}</span>
+            <span class="pill pill-muted">끝 4자리 ···${escapeHtml(ed.codeHint || '****')}</span>
+          </div>
+          <div class="editor-meta">
+            발급 ${escapeHtml(formatShortDateTime(ed.createdAtMs))} · 최근 사용 ${escapeHtml(formatShortDateTime(ed.lastUsedAtMs))}
+          </div>
+        </div>
+        <button
+          type="button"
+          class="btn btn-xs btn-danger"
+          data-revoke-editor-id="${escapeHtml(ed.id)}"
+          data-revoke-editor-label="${escapeHtml(ed.label)}"
+        >권한 회수</button>
+      </div>
+    `
+    )
+    .join('');
+}
+
+function renderAuthModal() {
+  const isSetup = apiAvailable && !authState.configured;
+  const isViewer = apiAvailable && authState.configured && authState.role === 'viewer';
+  const isEditor = apiAvailable && authState.role === 'editor';
+  const isHost = apiAvailable && authState.role === 'host';
+
+  $('auth-setup-view').classList.toggle('hidden', !isSetup);
+  $('auth-login-view').classList.toggle('hidden', !isViewer);
+  $('auth-editor-view').classList.toggle('hidden', !isEditor);
+  $('auth-host-view').classList.toggle('hidden', !isHost);
+
+  if (isEditor) {
+    $('auth-current-label').textContent = authState.label || '편집자';
+  }
+  if (isHost) {
+    $('form-change-host-pw').classList.toggle('hidden', Boolean(authState.envHostLocked));
+    $('auth-env-locked-note').classList.toggle('hidden', !authState.envHostLocked);
+    renderEditorsList();
+  }
+}
+
+async function openAuthModal() {
+  if (!apiAvailable) {
+    showToast('로컬 단독 모드', '서버 동기화가 활성화되지 않았습니다.');
+    return;
+  }
+  const status = await fetchAuthStatus();
+  if (status.ok) {
+    authState = {
+      configured: Boolean(status.configured),
+      envHostLocked: Boolean(status.envHostLocked),
+      role: status.role || 'viewer',
+      label: status.label || null,
+      revoked: Boolean(status.revoked),
+      editors: Array.isArray(status.editors) ? status.editors : [],
+    };
+    updateAuthAndSyncUI();
+  }
+  $('issued-editor-box').classList.add('hidden');
+  $('auth-login-code').value = '';
+  $('auth-setup-password').value = '';
+  $('auth-setup-confirm').value = '';
+  renderAuthModal();
+  openModal('modal-auth');
 }
 
 function renderBossCustomOffsetChips() {
@@ -1532,21 +1987,30 @@ async function refreshScheduleImage(tryCopy = true) {
   }
 }
 
+async function copyTextToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 async function copyScheduleTextFallback() {
   const serverMeta = getServerMeta(appState.activeServerId);
   const text = formatScheduleForShare(getActiveBosses(), getNowMs(), serverMeta.name);
-  try {
-    await navigator.clipboard.writeText(text);
-    showToast('텍스트 복사 완료', `${serverMeta.name} 시간표 텍스트를 복사했습니다.`);
-  } catch {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-    showToast('텍스트 복사 완료', '시간표 텍스트를 클립보드에 복사했습니다.');
-  }
+  await copyTextToClipboard(text);
+  showToast('텍스트 복사 완료', `${serverMeta.name} 시간표 텍스트를 복사했습니다.`);
 }
 
 function updateMaintenanceScheduleStatus() {
@@ -1622,20 +2086,22 @@ function bindEvents() {
       showToast(`${meta.name} 선택됨`, '다음 접속 시 이 서버가 기본 서버로 열립니다.');
     } else if (action === 'toggle-fav') {
       appState.serverTabs = toggleServerFavorite(appState.serverTabs, serverId);
-      saveState(appState);
+      persistLocalOnly();
       renderServerTabs();
     } else if (action === 'remove') {
       const meta = getServerMeta(serverId);
       if (
         !window.confirm(
-          `'${meta.name}' 서버 탭을 목록에서 제거할까요? 해당 서버에 저장된 보스 시간도 함께 삭제됩니다.`
+          apiAvailable
+            ? `'${meta.name}' 서버 탭을 내 탭 목록에서 숨길까요? (공용 서버 시간표 데이터는 서버에 그대로 유지됩니다.)`
+            : `'${meta.name}' 서버 탭을 목록에서 제거할까요? 해당 서버에 저장된 보스 시간도 함께 삭제됩니다.`
         )
       ) {
         return;
       }
-      appState = removeServerTab(appState, serverId);
+      appState = removeServerTab(appState, serverId, { preserveServers: apiAvailable });
       currentSpotlightKey = '';
-      saveState(appState, true);
+      persistLocalOnly();
       renderServerTabs();
       renderBossList();
       renderAlertLogs();
@@ -1644,13 +2110,13 @@ function bindEvents() {
 
   $('btn-move-tab-left').addEventListener('click', () => {
     appState.serverTabs = moveServerTab(appState.serverTabs, appState.activeServerId, -1);
-    saveState(appState);
+    persistLocalOnly();
     renderServerTabs();
   });
 
   $('btn-move-tab-right').addEventListener('click', () => {
     appState.serverTabs = moveServerTab(appState.serverTabs, appState.activeServerId, 1);
-    saveState(appState);
+    persistLocalOnly();
     renderServerTabs();
   });
 
@@ -1678,7 +2144,7 @@ function bindEvents() {
         appState.activeServerId = prevActive;
       }
       appState.serverTabs = toggleServerFavorite(appState.serverTabs, serverId);
-      saveState(appState);
+      persistLocalOnly();
       renderServerTabs();
       renderServerPickerModal();
       return;
@@ -1696,7 +2162,13 @@ function bindEvents() {
     }
   });
 
-  // Topbar actions
+  // Topbar sync & auth actions
+  $('btn-sync-refresh').addEventListener('click', () => {
+    refreshFromServer(false);
+  });
+
+  $('btn-open-auth').addEventListener('click', openAuthModal);
+
   $('btn-notify-perm').addEventListener('click', async () => {
     const perm = await requestNotificationPermission();
     updatePermissionButton();
@@ -1758,9 +2230,20 @@ function bindEvents() {
 
   $('btn-copy-schedule-text').addEventListener('click', copyScheduleTextFallback);
 
-  $('btn-open-maintenance').addEventListener('click', openMaintenanceModal);
+  $('btn-open-maintenance').addEventListener('click', () => {
+    if (!canEditShared()) {
+      requireEditPermissionToast();
+      return;
+    }
+    openMaintenanceModal();
+  });
 
-  $('maint-auto-enabled').addEventListener('change', (e) => {
+  $('maint-auto-enabled').addEventListener('change', async (e) => {
+    if (!canEditShared()) {
+      e.target.checked = appState.settings.autoWednesdayReset;
+      requireEditPermissionToast();
+      return;
+    }
     appState.settings.autoWednesdayReset = e.target.checked;
     if (e.target.checked) {
       const timeStr = normalizeMaintenanceTimeStr(appState.settings.maintenanceEndTime);
@@ -1769,12 +2252,16 @@ function bindEvents() {
         getMostRecentWednesdayResetMs(getNowMs(), timeStr)
       );
     }
-    saveState(appState);
+    await persistSharedChange({ preserveBossNotifyDefaults: true });
     updateMaintenanceScheduleStatus();
     renderGlobalNotifyControls();
   });
 
-  $('btn-save-maint-schedule').addEventListener('click', () => {
+  $('btn-save-maint-schedule').addEventListener('click', async () => {
+    if (!canEditShared()) {
+      requireEditPermissionToast();
+      return;
+    }
     const parsed = parseTimeString($('maint-default-time').value);
     if (!parsed) {
       showToast('입력 오류', '기본 점검 종료 시각은 HH:MM 형식(예: 08:00)으로 입력해 주세요.', true);
@@ -1787,10 +2274,12 @@ function bindEvents() {
       getMostRecentWednesdayResetMs(getNowMs(), timeStr)
     );
     $('maint-default-time').value = timeStr;
-    saveState(appState);
+    const saved = await persistSharedChange({ preserveBossNotifyDefaults: true });
     updateMaintenanceScheduleStatus();
     renderGlobalNotifyControls();
-    showToast('정기점검 기본 시각 저장', `매주 수요일 자동 리셋 기준: ${timeStr}`);
+    if (saved) {
+      showToast('정기점검 기본 시각 저장', `매주 수요일 자동 리셋 기준: ${timeStr}`);
+    }
   });
 
   $('maint-paste-text').addEventListener('input', (e) => {
@@ -1809,6 +2298,10 @@ function bindEvents() {
 
   $('form-maintenance-reset').addEventListener('submit', async (e) => {
     e.preventDefault();
+    if (!canEditShared()) {
+      requireEditPermissionToast();
+      return;
+    }
     const nowMs = getNowMs();
     const dayOffset = Number($('maint-apply-day-offset').value || 0);
     const baseMs = buildTimestampOnDay($('maint-apply-time').value, nowMs, dayOffset);
@@ -1822,49 +2315,58 @@ function bindEvents() {
     appState = applyManualMaintenanceReset(appState, baseMs, { scope, mode }, nowMs);
     firedAlertKeys.clear();
     currentSpotlightKey = '';
-    await saveState(appState, true);
+    const saved = await persistSharedChange({ preserveBossNotifyDefaults: true });
     renderServerTabs();
     renderBossList();
     renderAlertLogs();
     updateTickDisplays(nowMs);
     closeModal('modal-maintenance');
-    showToast(
-      '정기점검 리셋 완료',
-      `${formatRelativeDayLabel(baseMs, nowMs)} ${formatTimeHHMM(baseMs)} 기준으로 필드 보스를 리셋했습니다.`
-    );
+    if (saved) {
+      showToast(
+        '정기점검 리셋 완료',
+        `${formatRelativeDayLabel(baseMs, nowMs)} ${formatTimeHHMM(baseMs)} 기준으로 필드 보스를 리셋했습니다.`
+      );
+    }
   });
 
-  $('btn-add-boss').addEventListener('click', () => openBossModal(null));
+  $('btn-add-boss').addEventListener('click', () => {
+    if (!canEditShared()) {
+      requireEditPermissionToast();
+      return;
+    }
+    openBossModal(null);
+  });
 
   $('btn-open-settings').addEventListener('click', () => {
     $('set-server-offset').value = String(appState.settings.serverOffsetSec || 0);
+    updateAuthAndSyncUI();
     openModal('modal-settings');
   });
 
-  // Global notification settings
+  // Global notification settings (Personal browser preferences)
   $('chk-desktop-notify').addEventListener('change', async (e) => {
     appState.settings.desktopNotifications = e.target.checked;
     if (e.target.checked && getNotificationPermission() === 'default') {
       await requestNotificationPermission();
       updatePermissionButton();
     }
-    saveState(appState);
+    persistLocalOnly();
   });
 
   $('chk-sound-notify').addEventListener('change', (e) => {
     appState.settings.soundEnabled = e.target.checked;
-    saveState(appState);
+    persistLocalOnly();
   });
 
   $('sel-sound-preset').addEventListener('change', (e) => {
     appState.settings.soundPreset = e.target.value;
     playAlertSound(appState.settings.soundPreset, appState.settings.soundVolume);
-    saveState(appState);
+    persistLocalOnly();
   });
 
   $('rng-sound-volume').addEventListener('input', (e) => {
     appState.settings.soundVolume = Number(e.target.value);
-    saveState(appState);
+    persistLocalOnly();
   });
 
   $('btn-test-sound').addEventListener('click', () => {
@@ -1879,7 +2381,7 @@ function bindEvents() {
     if (e.target.checked) {
       speakKoreanAlert('보스 출현 음성 안내가 켜졌습니다.');
     }
-    saveState(appState);
+    persistLocalOnly();
   });
 
   $('global-offset-chips').addEventListener('click', (e) => {
@@ -1901,30 +2403,30 @@ function bindEvents() {
     $('inp-global-offset-val').value = '';
   });
 
-  // Toolbar filter, group-by-type, sort
+  // Toolbar filter, group-by-type, sort (Personal view settings)
   $('boss-filter-pills').addEventListener('click', (e) => {
     const btn = e.target.closest('[data-boss-filter]');
     if (!btn) return;
     appState.settings.bossFilter = btn.dataset.bossFilter;
-    saveState(appState);
+    persistLocalOnly();
     renderGlobalNotifyControls();
     renderBossList();
   });
 
   $('chk-group-by-type').addEventListener('change', (e) => {
     appState.settings.groupByType = e.target.checked;
-    saveState(appState);
+    persistLocalOnly();
     renderBossList();
   });
 
   $('sel-sort-by').addEventListener('change', (e) => {
     appState.settings.sortBy = e.target.value;
-    saveState(appState);
+    persistLocalOnly();
     renderBossList();
   });
 
   // Spotlight & Boss List delegated click actions
-  const handleBossActionClick = (e) => {
+  const handleBossActionClick = async (e) => {
     const btn = e.target.closest('[data-action]');
     if (!btn) return;
     const action = btn.dataset.action;
@@ -1937,47 +2439,71 @@ function bindEvents() {
     const boss = bosses[idx];
     const nextBosses = [...bosses];
 
+    if (action === 'toggle-boss-notify') {
+      const nextEnabled = !boss.notifyEnabled;
+      const sid = appState.activeServerId;
+      if (!localPrefs.bossNotifyOverrides[sid]) localPrefs.bossNotifyOverrides[sid] = {};
+      localPrefs.bossNotifyOverrides[sid][bossId] = {
+        ...(localPrefs.bossNotifyOverrides[sid][bossId] || {}),
+        notifyEnabled: nextEnabled,
+      };
+      nextBosses[idx] = { ...boss, notifyEnabled: nextEnabled };
+      setActiveBosses(nextBosses);
+      persistLocalOnly();
+      renderBossList();
+      return;
+    }
+
+    if (!canEditShared()) {
+      requireEditPermissionToast();
+      return;
+    }
+
     if (action === 'expected-cut') {
       nextBosses[idx] = advanceBossCycle(boss, 'expected_cut', nowMs);
       setActiveBosses(nextBosses);
-      saveState(appState);
       renderBossList();
-      showToast(
-        `${boss.name} 다음 주기 반영`,
-        `다음 출현: ${formatRelativeDayLabel(nextBosses[idx].nextSpawnMs, nowMs)} ${formatTimeHHMM(nextBosses[idx].nextSpawnMs)}`
-      );
+      const saved = await persistSharedChange({ preserveBossNotifyDefaults: true });
+      if (saved) {
+        showToast(
+          `${boss.name} 다음 주기 반영`,
+          `다음 출현: ${formatRelativeDayLabel(nextBosses[idx].nextSpawnMs, nowMs)} ${formatTimeHHMM(nextBosses[idx].nextSpawnMs)}`
+        );
+      }
     } else if (action === 'killed-now') {
       nextBosses[idx] = advanceBossCycle(boss, 'killed_now', nowMs);
       setActiveBosses(nextBosses);
-      saveState(appState);
       renderBossList();
-      showToast(
-        `${boss.name} 처치 완료`,
-        `다음 출현: ${formatRelativeDayLabel(nextBosses[idx].nextSpawnMs, nowMs)} ${formatTimeHHMM(nextBosses[idx].nextSpawnMs)}`
-      );
+      const saved = await persistSharedChange({ preserveBossNotifyDefaults: true });
+      if (saved) {
+        showToast(
+          `${boss.name} 처치 완료`,
+          `다음 출현: ${formatRelativeDayLabel(nextBosses[idx].nextSpawnMs, nowMs)} ${formatTimeHHMM(nextBosses[idx].nextSpawnMs)}`
+        );
+      }
     } else if (action === 'undo-time') {
       nextBosses[idx] = undoBossTimeChange(boss, nowMs);
       setActiveBosses(nextBosses);
-      saveState(appState);
       renderBossList();
+      await persistSharedChange({ preserveBossNotifyDefaults: true });
     } else if (action === 'quick-time') {
       openQuickTimeModal(bossId);
     } else if (action === 'edit-boss') {
       openBossModal(bossId);
-    } else if (action === 'toggle-boss-notify') {
-      nextBosses[idx] = { ...boss, notifyEnabled: !boss.notifyEnabled };
-      setActiveBosses(nextBosses);
-      saveState(appState);
-      renderBossList();
     }
   };
 
   $('spotlight-section').addEventListener('click', handleBossActionClick);
   $('boss-list').addEventListener('click', handleBossActionClick);
 
-  $('boss-list').addEventListener('change', (e) => {
+  $('boss-list').addEventListener('change', async (e) => {
     const autoCheck = e.target.closest('[data-action="toggle-auto-rollover"]');
     if (autoCheck) {
+      if (!canEditShared()) {
+        autoCheck.checked = !autoCheck.checked;
+        requireEditPermissionToast();
+        return;
+      }
       const bosses = getActiveBosses();
       const idx = bosses.findIndex((b) => b.id === autoCheck.dataset.bossId);
       if (idx !== -1) {
@@ -1987,8 +2513,8 @@ function bindEvents() {
           getNowMs()
         );
         setActiveBosses(nextBosses);
-        saveState(appState);
         renderBossList();
+        await persistSharedChange({ preserveBossNotifyDefaults: true });
       }
       return;
     }
@@ -2006,11 +2532,11 @@ function bindEvents() {
     }
   });
 
-  // Alert log clear
+  // Alert log clear (personal logs)
   $('btn-clear-logs').addEventListener('click', () => {
     setActiveLogs([]);
     renderAlertLogs();
-    saveState(appState);
+    persistLocalOnly();
   });
 
   // Modals close buttons & backdrop click
@@ -2105,8 +2631,12 @@ function bindEvents() {
     r.addEventListener('change', updateBossModalPreview);
   });
 
-  $('form-boss').addEventListener('submit', (e) => {
+  $('form-boss').addEventListener('submit', async (e) => {
     e.preventDefault();
+    if (!canEditShared()) {
+      requireEditPermissionToast();
+      return;
+    }
     const id = $('boss-form-id').value.trim();
     const level = normalizeBossLevel($('boss-form-level').value);
     const name = $('boss-form-name').value.trim();
@@ -2117,6 +2647,7 @@ function bindEvents() {
       document.querySelector('input[name="notifyMode"]:checked')?.value === 'custom';
     const bosses = [...getActiveBosses()];
     const existingIdx = id ? bosses.findIndex((b) => b.id === id) : -1;
+    const sid = appState.activeServerId;
 
     if (bossType === 'world') {
       if (!editingWorldFixedTimes.length) {
@@ -2147,11 +2678,14 @@ function bindEvents() {
       };
       if (existingIdx !== -1) bosses[existingIdx] = worldBoss;
       else bosses.push(worldBoss);
+      if (localPrefs.bossNotifyOverrides?.[sid]?.[worldBoss.id]) {
+        delete localPrefs.bossNotifyOverrides[sid][worldBoss.id];
+      }
 
       setActiveBosses(bosses);
-      saveState(appState);
       closeModal('modal-boss');
       renderBossList();
+      await persistSharedChange({ includeBossNotify: true });
       return;
     }
 
@@ -2211,23 +2745,30 @@ function bindEvents() {
     } else {
       bosses.push(finalized);
     }
+    if (localPrefs.bossNotifyOverrides?.[sid]?.[finalized.id]) {
+      delete localPrefs.bossNotifyOverrides[sid][finalized.id];
+    }
 
     setActiveBosses(bosses);
-    saveState(appState);
     closeModal('modal-boss');
     renderBossList();
+    await persistSharedChange({ includeBossNotify: true });
   });
 
-  $('btn-delete-boss').addEventListener('click', () => {
+  $('btn-delete-boss').addEventListener('click', async () => {
+    if (!canEditShared()) {
+      requireEditPermissionToast();
+      return;
+    }
     const id = $('boss-form-id').value;
     const bosses = getActiveBosses();
     const boss = bosses.find((b) => b.id === id);
     if (!boss) return;
     if (!window.confirm(`'${boss.name}' 보스를 목록에서 삭제할까요?`)) return;
     setActiveBosses(bosses.filter((b) => b.id !== id));
-    saveState(appState);
     closeModal('modal-boss');
     renderBossList();
+    await persistSharedChange({ preserveBossNotifyDefaults: true });
   });
 
   // Quick Time Modal
@@ -2237,8 +2778,12 @@ function bindEvents() {
     r.addEventListener('change', updateQuickTimePreview);
   });
 
-  $('form-quick-time').addEventListener('submit', (e) => {
+  $('form-quick-time').addEventListener('submit', async (e) => {
     e.preventDefault();
+    if (!canEditShared()) {
+      requireEditPermissionToast();
+      return;
+    }
     const id = $('quick-boss-id').value;
     const bosses = [...getActiveBosses()];
     const idx = bosses.findIndex((b) => b.id === id);
@@ -2254,19 +2799,162 @@ function bindEvents() {
     const mode = document.querySelector('input[name="quickTimeMode"]:checked')?.value || 'manual';
     bosses[idx] = setBossTimeByMode(bosses[idx], mode, baseMs);
     setActiveBosses(bosses);
-    saveState(appState);
     closeModal('modal-quick-time');
     renderBossList();
+    await persistSharedChange({ preserveBossNotifyDefaults: true });
+  });
+
+  // Auth modal events (Host & Editor access)
+  $('form-auth-setup').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const pw = $('auth-setup-password').value.trim();
+    const confirmPw = $('auth-setup-confirm').value.trim();
+    if (pw.length < 4) {
+      showToast('입력 오류', '비밀번호는 4자 이상 입력해 주세요.', true);
+      return;
+    }
+    if (pw !== confirmPw) {
+      showToast('입력 오류', '비밀번호 확인이 일치하지 않습니다.', true);
+      return;
+    }
+    const res = await postAuthAction({ action: 'setup_host', password: pw });
+    if (!res.ok) {
+      showToast('설정 실패', res.message || '호스트 비밀번호 설정에 실패했습니다.', true);
+      return;
+    }
+    saveAuthSession({ token: res.token, role: 'host', label: '메인 호스트' });
+    authState = {
+      configured: true,
+      envHostLocked: Boolean(res.envHostLocked),
+      role: 'host',
+      label: '메인 호스트',
+      revoked: false,
+      editors: Array.isArray(res.editors) ? res.editors : [],
+    };
+    $('auth-setup-password').value = '';
+    $('auth-setup-confirm').value = '';
+    updateAuthAndSyncUI();
+    renderAuthModal();
+    renderBossList();
+    showToast('메인 호스트 설정 완료', '이제 시간표 수정 및 편집자 권한 발급이 가능합니다.');
+  });
+
+  $('form-auth-login').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const code = $('auth-login-code').value.trim();
+    if (!code) return;
+    const res = await postAuthAction({ action: 'login', code });
+    if (!res.ok) {
+      showToast('인증 실패', res.message || '비밀번호 또는 편집 코드가 올바르지 않습니다.', true);
+      return;
+    }
+    saveAuthSession({ token: res.token, role: res.role, label: res.label });
+    authState = {
+      configured: Boolean(res.configured),
+      envHostLocked: Boolean(res.envHostLocked),
+      role: res.role,
+      label: res.label,
+      revoked: false,
+      editors: Array.isArray(res.editors) ? res.editors : [],
+    };
+    $('auth-login-code').value = '';
+    updateAuthAndSyncUI();
+    renderAuthModal();
+    renderBossList();
+    showToast('권한 인증 완료', `${res.label || '편집'} 권한이 활성화되었습니다.`);
+  });
+
+  const handleLogout = async () => {
+    clearAuthSession();
+    authState = {
+      ...authState,
+      role: 'viewer',
+      label: null,
+      revoked: false,
+      editors: [],
+    };
+    updateAuthAndSyncUI();
+    renderAuthModal();
+    renderBossList();
+    showToast('보기 전용 전환', '편집 권한에서 로그아웃했습니다.');
+  };
+  $('btn-auth-logout').addEventListener('click', handleLogout);
+  $('btn-host-logout').addEventListener('click', handleLogout);
+
+  $('form-create-editor').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const label = $('inp-editor-label').value.trim();
+    if (!label) return;
+    const res = await postAuthAction({ action: 'create_editor', label });
+    if (!res.ok) {
+      showToast('발급 실패', res.message || '편집 권한 발급에 실패했습니다.', true);
+      return;
+    }
+    authState.editors = Array.isArray(res.editors) ? res.editors : authState.editors;
+    $('inp-editor-label').value = '';
+    $('issued-editor-label').textContent = res.editor?.label || label;
+    $('issued-editor-code').textContent = res.code;
+    $('issued-editor-link').value = `${window.location.origin}/?edit=${encodeURIComponent(res.code)}`;
+    $('issued-editor-box').classList.remove('hidden');
+    renderEditorsList();
+    showToast('권한 발급 완료', `'${label}' 초대 링크와 코드가 생성되었습니다.`);
+  });
+
+  $('btn-close-issued-box').addEventListener('click', () => {
+    $('issued-editor-box').classList.add('hidden');
+  });
+
+  $('btn-copy-editor-code').addEventListener('click', async () => {
+    await copyTextToClipboard($('issued-editor-code').textContent || '');
+    showToast('코드 복사 완료', '편집 코드를 클립보드에 복사했습니다.');
+  });
+
+  $('btn-copy-editor-link').addEventListener('click', async () => {
+    await copyTextToClipboard($('issued-editor-link').value || '');
+    showToast('초대 링크 복사 완료', '카톡/디스코드에 붙여넣어 전달하세요.');
+  });
+
+  $('auth-editors-list').addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-revoke-editor-id]');
+    if (!btn) return;
+    const editorId = btn.dataset.revokeEditorId;
+    const label = btn.dataset.revokeEditorLabel || '편집자';
+    if (!window.confirm(`'${label}'의 편집 권한을 즉시 회수할까요?`)) return;
+    const res = await postAuthAction({ action: 'revoke_editor', editorId });
+    if (!res.ok) {
+      showToast('회수 실패', res.message || '권한 회수에 실패했습니다.', true);
+      return;
+    }
+    authState.editors = Array.isArray(res.editors) ? res.editors : [];
+    renderEditorsList();
+    showToast('권한 회수 완료', `'${label}'의 수정 권한이 회수되었습니다.`);
+  });
+
+  $('form-change-host-pw').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const newPassword = $('inp-new-host-pw').value.trim();
+    if (newPassword.length < 4) {
+      showToast('입력 오류', '새 비밀번호는 4자 이상 입력해 주세요.', true);
+      return;
+    }
+    const res = await postAuthAction({ action: 'change_host_password', newPassword });
+    if (!res.ok) {
+      showToast('변경 실패', res.message || '비밀번호 변경에 실패했습니다.', true);
+      return;
+    }
+    saveAuthSession({ token: res.token, role: 'host', label: '메인 호스트' });
+    $('inp-new-host-pw').value = '';
+    showToast('비밀번호 변경 완료', '새 호스트 비밀번호가 적용되었습니다.');
   });
 
   // Global settings & backup
   $('btn-save-server-offset').addEventListener('click', () => {
     const val = Math.round(Number($('set-server-offset').value || 0));
     appState.settings.serverOffsetSec = Math.max(-3600, Math.min(3600, val));
-    saveState(appState);
+    persistLocalOnly();
     renderGlobalNotifyControls();
     renderBossList();
-    showToast('시계 보정 적용', `서버 오차 보정: ${appState.settings.serverOffsetSec}초`);
+    showToast('시계 보정 적용', `내 PC 서버 오차 보정: ${appState.settings.serverOffsetSec}초`);
   });
 
   $('btn-export-json').addEventListener('click', () => {
@@ -2282,20 +2970,32 @@ function bindEvents() {
   $('inp-import-json').addEventListener('change', async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (!canEditShared()) {
+      e.target.value = '';
+      requireEditPermissionToast();
+      return;
+    }
     try {
       const text = await file.text();
       const parsed = JSON.parse(text);
-      appState = sanitizeState(parsed, getNowMs());
+      const importedShared = sanitizeSharedState(parsed?.sharedState ?? parsed, getNowMs());
+      sharedState = importedShared;
+      appState = mergeSharedAndLocalState(sharedState, localPrefs, getNowMs());
       rolloverAllBosses(getNowMs(), false);
       firedAlertKeys.clear();
       currentSpotlightKey = '';
-      await saveState(appState, true);
+      const saved = await persistSharedChange({
+        force: authState.role === 'host',
+        includeBossNotify: true,
+      });
       renderServerTabs();
       renderGlobalNotifyControls();
       renderBossList();
       renderAlertLogs();
       closeModal('modal-settings');
-      showToast('가져오기 완료', `${appState.serverTabs.length}개 서버 데이터를 불러왔습니다.`);
+      if (saved) {
+        showToast('가져오기 완료', '백업 데이터를 공용 시간표에 반영했습니다.');
+      }
     } catch {
       showToast('가져오기 실패', '올바른 JSON 백업 파일이 아닙니다.', true);
     } finally {
@@ -2303,7 +3003,36 @@ function bindEvents() {
     }
   });
 
+  $('btn-upload-legacy-backup').addEventListener('click', async () => {
+    if (authState.role !== 'host') {
+      requireEditPermissionToast();
+      return;
+    }
+    const legacy = getLegacyLocalBackup();
+    if (!legacy) return;
+    if (!window.confirm('이 브라우저에 저장되어 있던 기존 시간표를 공용 서버로 덮어쓸까요?')) {
+      return;
+    }
+    sharedState = sanitizeSharedState(legacy, getNowMs());
+    appState = mergeSharedAndLocalState(sharedState, localPrefs, getNowMs());
+    rolloverAllBosses(getNowMs(), false);
+    firedAlertKeys.clear();
+    currentSpotlightKey = '';
+    const saved = await persistSharedChange({ force: true, includeBossNotify: true });
+    renderServerTabs();
+    renderGlobalNotifyControls();
+    renderBossList();
+    closeModal('modal-settings');
+    if (saved) {
+      showToast('기존 시간표 업로드 완료', '이전 로컬 시간표를 공용 서버에 반영했습니다.');
+    }
+  });
+
   $('btn-reset-defaults').addEventListener('click', async () => {
+    if (!canEditShared()) {
+      requireEditPermissionToast();
+      return;
+    }
     const serverMeta = getServerMeta(appState.activeServerId);
     if (
       !window.confirm(
@@ -2317,16 +3046,22 @@ function bindEvents() {
     rolloverAllBosses(getNowMs(), false);
     firedAlertKeys.clear();
     currentSpotlightKey = '';
-    await saveState(appState, true);
     renderServerTabs();
     renderBossList();
     renderAlertLogs();
     closeModal('modal-settings');
-    showToast('프리셋 복원 완료', `${serverMeta.name} 서버가 초기 프리셋으로 복원되었습니다.`);
+    const saved = await persistSharedChange({ includeBossNotify: true });
+    if (saved) {
+      showToast('프리셋 복원 완료', `${serverMeta.name} 서버가 초기 프리셋으로 복원되었습니다.`);
+    }
   });
 }
 
-function applyInlineParamChange(inputEl, commit) {
+async function applyInlineParamChange(inputEl, commit) {
+  if (!canEditShared()) {
+    if (commit) requireEditPermissionToast();
+    return;
+  }
   const bossId = inputEl.dataset.bossId;
   const cardEl = document.querySelector(`[data-boss-card="${CSS.escape(bossId)}"]`);
   const bosses = [...getActiveBosses()];
@@ -2341,8 +3076,10 @@ function applyInlineParamChange(inputEl, commit) {
     bosses[idx] = { ...boss, activeDurationSec: activeMin * 60 };
     setActiveBosses(bosses);
     updateTickDisplays(nowMs);
-    saveState(appState, commit);
-    if (commit) renderBossList();
+    if (commit) {
+      renderBossList();
+      await persistSharedChange({ preserveBossNotifyDefaults: true });
+    }
     return;
   }
 
@@ -2384,10 +3121,10 @@ function applyInlineParamChange(inputEl, commit) {
 
   updateCardComputedPreview(cardEl, updated, nowMs);
   updateTickDisplays(nowMs);
-  saveState(appState, commit);
 
   if (commit) {
     renderBossList();
+    await persistSharedChange({ preserveBossNotifyDefaults: true });
   }
 }
 
@@ -2395,24 +3132,59 @@ async function init() {
   unlockAudioOnGesture();
   updatePermissionButton();
 
-  const loaded = await loadState();
-  appState = loaded.state;
+  localPrefs = loadLocalPrefs();
+  const inviteCode = consumeInviteCodeFromUrl();
 
-  const initNowMs = getNowMs();
-  const schedInit = applyScheduledWednesdayReset(appState, initNowMs);
-  if (schedInit.didReset) {
-    appState = schedInit.state;
+  const boot = await fetchSharedBootstrap();
+  apiAvailable = boot.apiAvailable;
+  sharedState = boot.sharedState;
+  authState = {
+    configured: Boolean(boot.auth?.configured),
+    envHostLocked: Boolean(boot.auth?.envHostLocked),
+    role: boot.auth?.role || 'viewer',
+    label: boot.auth?.label || null,
+    revoked: Boolean(boot.auth?.revoked),
+    editors: [],
+  };
+
+  if (inviteCode && apiAvailable) {
+    const loginRes = await postAuthAction({ action: 'login', code: inviteCode });
+    if (loginRes.ok) {
+      saveAuthSession({ token: loginRes.token, role: loginRes.role, label: loginRes.label });
+      authState = {
+        ...authState,
+        configured: Boolean(loginRes.configured),
+        envHostLocked: Boolean(loginRes.envHostLocked),
+        role: loginRes.role,
+        label: loginRes.label,
+        revoked: false,
+      };
+      showToast(
+        '편집 권한 활성화',
+        `'${loginRes.label || '편집자'}' 권한으로 로그인되었습니다.`
+      );
+    } else {
+      showToast('유효하지 않은 초대 링크', loginRes.message || '회수되었거나 만료된 초대 코드입니다.', true);
+    }
+  } else if (authState.revoked) {
+    showToast('편집 권한 회수됨', '기존 편집 권한이 회수되어 보기 전용으로 접속했습니다.', true);
   }
 
+  lastSyncFetchMs = Date.now();
+  appState = mergeSharedAndLocalState(sharedState, localPrefs, Date.now());
+
+  const initNowMs = getNowMs();
+  const schedDidReset = applyScheduledWednesdayResetInMemory(initNowMs);
   const { anyRolled } = rolloverAllBosses(initNowMs, false);
-  if (schedInit.didReset || anyRolled) {
-    saveState(appState, true);
+  if ((schedDidReset || anyRolled) && canEditShared()) {
+    await persistSharedChange({ preserveBossNotifyDefaults: true, silent: true });
   }
 
   renderServerTabs();
   renderGlobalNotifyControls();
   renderBossList();
   renderAlertLogs();
+  updateAuthAndSyncUI();
   updateTickDisplays(getNowMs());
 
   bindEvents();

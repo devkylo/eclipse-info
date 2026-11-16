@@ -419,12 +419,14 @@ export function addOrSelectServer(state, serverId, seedMode = 'auto', nowMs = Da
   };
 }
 
-export function removeServerTab(state, serverId) {
+export function removeServerTab(state, serverId, options = {}) {
   const ordered = getOrderedServerTabs(state.serverTabs);
   if (ordered.length <= 1) return state;
   const nextTabs = ordered.filter((t) => t.id !== serverId);
   const nextServers = { ...(state.servers || {}) };
-  delete nextServers[serverId];
+  if (!options.preserveServers) {
+    delete nextServers[serverId];
+  }
   const nextActive =
     state.activeServerId === serverId ? nextTabs[0].id : state.activeServerId;
 
@@ -1199,6 +1201,64 @@ function sanitizeBossArray(rawBosses, fallbackBosses, fallbackNowMs, isLegacyV1,
   return cleaned;
 }
 
+function normalizeOffsetList(rawList, fallback = DEFAULT_NOTIFY_OFFSETS_SEC) {
+  if (!Array.isArray(rawList)) return [...fallback];
+  return Array.from(
+    new Set(
+      rawList
+        .map((x) => Math.round(Number(x)))
+        .filter((x) => Number.isFinite(x) && x >= 0)
+    )
+  ).sort((a, b) => b - a);
+}
+
+function sanitizeSettingsObject(rawSettings, fallbackSettings = createDefaultSettings(), isLegacyV1 = false) {
+  const settings = {
+    ...fallbackSettings,
+    ...(rawSettings && typeof rawSettings === 'object' ? rawSettings : {}),
+  };
+  if (isLegacyV1) {
+    settings.autoRolloverDefault = true;
+  }
+  if (!['all', 'world', 'field'].includes(settings.bossFilter)) {
+    settings.bossFilter = 'all';
+  }
+  if (!['soonest', 'name', 'custom'].includes(settings.sortBy)) {
+    settings.sortBy = 'soonest';
+  }
+  settings.groupByType = Boolean(settings.groupByType);
+  settings.desktopNotifications = Boolean(settings.desktopNotifications);
+  settings.soundEnabled = settings.soundEnabled !== false;
+  settings.ttsEnabled = Boolean(settings.ttsEnabled);
+  settings.globalNotifyOffsetsSec = normalizeOffsetList(
+    settings.globalNotifyOffsetsSec,
+    DEFAULT_NOTIFY_OFFSETS_SEC
+  );
+  settings.soundVolume = Math.min(1, Math.max(0, Number(settings.soundVolume ?? 0.7)));
+  settings.serverOffsetSec = Number.isFinite(Number(settings.serverOffsetSec))
+    ? Math.max(-3600, Math.min(3600, Math.round(Number(settings.serverOffsetSec))))
+    : 0;
+  settings.autoWednesdayReset = settings.autoWednesdayReset !== false;
+  settings.maintenanceEndTime = normalizeMaintenanceTimeStr(settings.maintenanceEndTime);
+  return settings;
+}
+
+function sanitizeServerTabsList(rawTabs, fallbackTabs) {
+  const source = Array.isArray(rawTabs) ? rawTabs : fallbackTabs;
+  const seenTabIds = new Set();
+  const cleanTabs = [];
+  for (const t of source) {
+    const id = typeof t === 'string' ? t : t?.id;
+    if (typeof id !== 'string' || !SERVER_MAP.has(id) || seenTabIds.has(id)) continue;
+    seenTabIds.add(id);
+    cleanTabs.push({ id, favorite: typeof t === 'object' ? Boolean(t.favorite) : false });
+  }
+  if (!cleanTabs.length) {
+    cleanTabs.push({ id: DEFAULT_SERVER_ID, favorite: true });
+  }
+  return getOrderedServerTabs(cleanTabs);
+}
+
 export function sanitizeState(raw, fallbackNowMs = Date.now()) {
   const defaults = createDefaultState(fallbackNowMs);
   if (!raw || typeof raw !== 'object') return defaults;
@@ -1208,42 +1268,13 @@ export function sanitizeState(raw, fallbackNowMs = Date.now()) {
   const isPreMultiServer = versionNum < 3;
   const isPreWorldBoss = versionNum < 4;
 
-  const settings = {
-    ...defaults.settings,
-    ...(raw.settings && typeof raw.settings === 'object' ? raw.settings : {}),
-  };
-  if (isLegacyV1) {
-    settings.autoRolloverDefault = true;
-  }
-  if (!['all', 'world', 'field'].includes(settings.bossFilter)) {
-    settings.bossFilter = 'all';
-  }
-  settings.groupByType = Boolean(settings.groupByType);
-
-  if (!Array.isArray(settings.globalNotifyOffsetsSec)) {
-    settings.globalNotifyOffsetsSec = [...DEFAULT_NOTIFY_OFFSETS_SEC];
-  } else {
-    settings.globalNotifyOffsetsSec = Array.from(
-      new Set(
-        settings.globalNotifyOffsetsSec
-          .map((x) => Math.round(Number(x)))
-          .filter((x) => Number.isFinite(x) && x >= 0)
-      )
-    ).sort((a, b) => b - a);
-  }
-
-  settings.soundVolume = Math.min(1, Math.max(0, Number(settings.soundVolume ?? 0.7)));
-  settings.serverOffsetSec = Number.isFinite(Number(settings.serverOffsetSec))
-    ? Math.round(Number(settings.serverOffsetSec))
-    : 0;
-  settings.autoWednesdayReset = settings.autoWednesdayReset !== false;
-  settings.maintenanceEndTime = normalizeMaintenanceTimeStr(settings.maintenanceEndTime);
+  const settings = sanitizeSettingsObject(raw.settings, defaults.settings, isLegacyV1);
 
   const lastMaintenanceResetMs = Number.isFinite(Number(raw.lastMaintenanceResetMs))
     ? Number(raw.lastMaintenanceResetMs)
     : getMostRecentWednesdayResetMs(fallbackNowMs, settings.maintenanceEndTime);
 
-  // Migrate v1/v2 single-server payload into v5 servers['barkadion-05']
+  // Migrate v1/v2 single-server payload into v6 servers['barkadion-05']
   if (isPreMultiServer && !raw.servers) {
     const migratedBosses = sanitizeBossArray(
       raw.bosses,
@@ -1269,20 +1300,7 @@ export function sanitizeState(raw, fallbackNowMs = Date.now()) {
     };
   }
 
-  const rawTabs = Array.isArray(raw.serverTabs) ? raw.serverTabs : defaults.serverTabs;
-  const seenTabIds = new Set();
-  const cleanTabs = [];
-  for (const t of rawTabs) {
-    const id = typeof t === 'string' ? t : t?.id;
-    if (typeof id !== 'string' || !SERVER_MAP.has(id) || seenTabIds.has(id)) continue;
-    seenTabIds.add(id);
-    cleanTabs.push({ id, favorite: typeof t === 'object' ? Boolean(t.favorite) : false });
-  }
-  if (!cleanTabs.length) {
-    cleanTabs.push({ id: DEFAULT_SERVER_ID, favorite: true });
-  }
-
-  const orderedTabs = getOrderedServerTabs(cleanTabs);
+  const orderedTabs = sanitizeServerTabsList(raw.serverTabs, defaults.serverTabs);
   const rawServers = raw.servers && typeof raw.servers === 'object' ? raw.servers : {};
   const servers = {};
 
@@ -1319,4 +1337,305 @@ export function sanitizeState(raw, fallbackNowMs = Date.now()) {
     settings,
     servers,
   };
+}
+
+export function createDefaultSharedState(referenceMs = Date.now()) {
+  return {
+    version: 7,
+    revision: 1,
+    updatedAtMs: referenceMs,
+    updatedBy: '초기 설정',
+    lastMaintenanceResetMs: getMostRecentWednesdayResetMs(referenceMs, '08:00'),
+    maintenance: {
+      autoWednesdayReset: true,
+      maintenanceEndTime: '08:00',
+    },
+    servers: {
+      [DEFAULT_SERVER_ID]: {
+        bosses: createDefaultBosses(referenceMs),
+      },
+    },
+  };
+}
+
+export function sanitizeSharedState(raw, fallbackNowMs = Date.now()) {
+  const defaults = createDefaultSharedState(fallbackNowMs);
+  if (!raw || typeof raw !== 'object') return defaults;
+
+  // Support upgrading legacy full state (v1..v6) into shared v7 format cleanly
+  if (raw.bosses && !raw.servers) {
+    const legacy = sanitizeState(raw, fallbackNowMs);
+    return sanitizeSharedState(
+      {
+        version: 7,
+        revision: 1,
+        updatedAtMs: fallbackNowMs,
+        updatedBy: '백업 가져오기',
+        lastMaintenanceResetMs: legacy.lastMaintenanceResetMs,
+        maintenance: {
+          autoWednesdayReset: legacy.settings.autoWednesdayReset,
+          maintenanceEndTime: legacy.settings.maintenanceEndTime,
+        },
+        servers: legacy.servers,
+      },
+      fallbackNowMs
+    );
+  }
+
+  const rawMaint =
+    raw.maintenance && typeof raw.maintenance === 'object'
+      ? raw.maintenance
+      : raw.settings && typeof raw.settings === 'object'
+        ? raw.settings
+        : {};
+  const maintenanceEndTime = normalizeMaintenanceTimeStr(rawMaint.maintenanceEndTime);
+  const autoWednesdayReset = rawMaint.autoWednesdayReset !== false;
+  const lastMaintenanceResetMs = Number.isFinite(Number(raw.lastMaintenanceResetMs))
+    ? Number(raw.lastMaintenanceResetMs)
+    : getMostRecentWednesdayResetMs(fallbackNowMs, maintenanceEndTime);
+
+  const rawServers = raw.servers && typeof raw.servers === 'object' ? raw.servers : {};
+  const servers = {};
+  const versionNum = Number(raw.version || 0);
+  const isPreWorldBoss = versionNum > 0 && versionNum < 4;
+
+  for (const [sid, entry] of Object.entries(rawServers)) {
+    if (!SERVER_MAP.has(sid) || !entry || typeof entry !== 'object') continue;
+    const fallbackBosses =
+      sid === DEFAULT_SERVER_ID ? defaults.servers[DEFAULT_SERVER_ID].bosses : [];
+    const hasExisting = Array.isArray(entry.bosses) && entry.bosses.length > 0;
+    const injectWorld = isPreWorldBoss && (sid === DEFAULT_SERVER_ID || hasExisting);
+    servers[sid] = {
+      bosses: sanitizeBossArray(
+        Array.isArray(entry.bosses) ? entry.bosses : fallbackBosses,
+        fallbackBosses,
+        fallbackNowMs,
+        false,
+        injectWorld
+      ),
+    };
+  }
+
+  if (!servers[DEFAULT_SERVER_ID]) {
+    servers[DEFAULT_SERVER_ID] = {
+      bosses: createDefaultBosses(fallbackNowMs),
+    };
+  }
+
+  const revisionRaw = Math.floor(Number(raw.revision));
+  const revision = Number.isFinite(revisionRaw) && revisionRaw >= 1 ? revisionRaw : 1;
+  const updatedAtMs = Number.isFinite(Number(raw.updatedAtMs))
+    ? Number(raw.updatedAtMs)
+    : fallbackNowMs;
+  const updatedBy =
+    typeof raw.updatedBy === 'string' && raw.updatedBy.trim()
+      ? raw.updatedBy.trim().slice(0, 40)
+      : '초기 설정';
+
+  return {
+    version: 7,
+    revision,
+    updatedAtMs,
+    updatedBy,
+    lastMaintenanceResetMs,
+    maintenance: {
+      autoWednesdayReset,
+      maintenanceEndTime,
+    },
+    servers,
+  };
+}
+
+export function createDefaultLocalPrefs() {
+  const s = createDefaultSettings();
+  return {
+    version: 1,
+    hasSelectedInitialServer: false,
+    activeServerId: DEFAULT_SERVER_ID,
+    serverTabs: [{ id: DEFAULT_SERVER_ID, favorite: true }],
+    settings: {
+      globalNotifyOffsetsSec: s.globalNotifyOffsetsSec,
+      desktopNotifications: s.desktopNotifications,
+      soundEnabled: s.soundEnabled,
+      soundPreset: s.soundPreset,
+      soundVolume: s.soundVolume,
+      ttsEnabled: s.ttsEnabled,
+      autoRolloverDefault: s.autoRolloverDefault,
+      serverOffsetSec: s.serverOffsetSec,
+      sortBy: s.sortBy,
+      bossFilter: s.bossFilter,
+      groupByType: s.groupByType,
+    },
+    bossNotifyOverrides: {},
+    serverAlertLogs: {},
+  };
+}
+
+export function sanitizeLocalPrefs(raw) {
+  const defaults = createDefaultLocalPrefs();
+  if (!raw || typeof raw !== 'object') return defaults;
+
+  const cleanSettings = sanitizeSettingsObject(raw.settings, createDefaultSettings(), false);
+  const {
+    autoWednesdayReset: _ignoredAuto,
+    maintenanceEndTime: _ignoredMaint,
+    ...personalSettings
+  } = cleanSettings;
+
+  const serverTabs = sanitizeServerTabsList(raw.serverTabs, defaults.serverTabs);
+  const activeServerId =
+    typeof raw.activeServerId === 'string' && SERVER_MAP.has(raw.activeServerId)
+      ? raw.activeServerId
+      : serverTabs[0].id;
+
+  const bossNotifyOverrides = {};
+  if (raw.bossNotifyOverrides && typeof raw.bossNotifyOverrides === 'object') {
+    for (const [sid, bossMap] of Object.entries(raw.bossNotifyOverrides)) {
+      if (!SERVER_MAP.has(sid) || !bossMap || typeof bossMap !== 'object') continue;
+      const cleanMap = {};
+      for (const [bid, pref] of Object.entries(bossMap)) {
+        if (!pref || typeof pref !== 'object') continue;
+        cleanMap[bid] = {
+          ...(typeof pref.notifyEnabled === 'boolean' ? { notifyEnabled: pref.notifyEnabled } : {}),
+          ...(typeof pref.useCustomNotify === 'boolean'
+            ? { useCustomNotify: pref.useCustomNotify }
+            : {}),
+          ...(Array.isArray(pref.customNotifyOffsetsSec)
+            ? {
+                customNotifyOffsetsSec: normalizeOffsetList(
+                  pref.customNotifyOffsetsSec,
+                  DEFAULT_NOTIFY_OFFSETS_SEC
+                ),
+              }
+            : {}),
+        };
+      }
+      if (Object.keys(cleanMap).length) bossNotifyOverrides[sid] = cleanMap;
+    }
+  }
+
+  const serverAlertLogs = {};
+  if (raw.serverAlertLogs && typeof raw.serverAlertLogs === 'object') {
+    for (const [sid, logs] of Object.entries(raw.serverAlertLogs)) {
+      if (!SERVER_MAP.has(sid) || !Array.isArray(logs)) continue;
+      serverAlertLogs[sid] = logs.slice(0, 50);
+    }
+  }
+
+  return {
+    version: 1,
+    hasSelectedInitialServer: Boolean(raw.hasSelectedInitialServer),
+    activeServerId,
+    serverTabs,
+    settings: personalSettings,
+    bossNotifyOverrides,
+    serverAlertLogs,
+  };
+}
+
+export function mergeSharedAndLocalState(sharedState, localPrefs, nowMs = Date.now()) {
+  const cleanShared = sanitizeSharedState(sharedState, nowMs);
+  const cleanLocal = sanitizeLocalPrefs(localPrefs);
+
+  const orderedTabs = sanitizeServerTabsList(cleanLocal.serverTabs, [{ id: DEFAULT_SERVER_ID, favorite: true }]);
+  const activeServerId = SERVER_MAP.has(cleanLocal.activeServerId)
+    ? cleanLocal.activeServerId
+    : orderedTabs[0].id;
+  const activeTabs = orderedTabs.some((t) => t.id === activeServerId)
+    ? orderedTabs
+    : getOrderedServerTabs([...orderedTabs, { id: activeServerId, favorite: false }]);
+
+  const servers = {};
+  const sharedServerIds = new Set(Object.keys(cleanShared.servers));
+
+  for (const [sid, entry] of Object.entries(cleanShared.servers)) {
+    const overrides = cleanLocal.bossNotifyOverrides[sid] || {};
+    servers[sid] = {
+      bosses: entry.bosses.map((boss) => {
+        const pref = overrides[boss.id];
+        return pref ? { ...boss, ...pref } : boss;
+      }),
+      alertLogs: cleanLocal.serverAlertLogs[sid] ? [...cleanLocal.serverAlertLogs[sid]] : [],
+    };
+  }
+
+  for (const tab of activeTabs) {
+    if (!servers[tab.id]) {
+      servers[tab.id] = {
+        bosses: tab.id === DEFAULT_SERVER_ID ? createDefaultBosses(nowMs) : [],
+        alertLogs: cleanLocal.serverAlertLogs[tab.id] ? [...cleanLocal.serverAlertLogs[tab.id]] : [],
+      };
+    }
+  }
+
+  return {
+    version: 6,
+    hasSelectedInitialServer: cleanLocal.hasSelectedInitialServer,
+    activeServerId,
+    serverTabs: activeTabs,
+    lastMaintenanceResetMs: cleanShared.lastMaintenanceResetMs,
+    settings: {
+      ...cleanLocal.settings,
+      autoWednesdayReset: cleanShared.maintenance.autoWednesdayReset,
+      maintenanceEndTime: cleanShared.maintenance.maintenanceEndTime,
+    },
+    servers,
+    _sharedMeta: {
+      revision: cleanShared.revision,
+      updatedAtMs: cleanShared.updatedAtMs,
+      updatedBy: cleanShared.updatedBy,
+      sharedServerIds: Array.from(sharedServerIds),
+    },
+  };
+}
+
+export function extractSharedStateFromAppState(appState, options = {}) {
+  const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
+  const prevShared = options.previousSharedState
+    ? sanitizeSharedState(options.previousSharedState, nowMs)
+    : null;
+  const prevServers = prevShared?.servers || {};
+  const prevSharedIds = new Set(Object.keys(prevServers));
+
+  const servers = {};
+  const appServers = appState?.servers && typeof appState.servers === 'object' ? appState.servers : {};
+
+  for (const [sid, entry] of Object.entries(appServers)) {
+    if (!SERVER_MAP.has(sid) || !entry || !Array.isArray(entry.bosses)) continue;
+    // Keep server in shared store if it was already shared, has bosses, or was explicitly added
+    if (!prevSharedIds.has(sid) && entry.bosses.length === 0) continue;
+
+    const prevBossMap = new Map((prevServers[sid]?.bosses || []).map((b) => [b.id, b]));
+    servers[sid] = {
+      bosses: entry.bosses.map((b) => {
+        const prevBoss = prevBossMap.get(b.id);
+        // Preserve server's shared notify defaults unless caller explicitly saved boss detail settings
+        if (prevBoss && options.preserveBossNotifyDefaults) {
+          return {
+            ...b,
+            notifyEnabled: prevBoss.notifyEnabled,
+            useCustomNotify: prevBoss.useCustomNotify,
+            customNotifyOffsetsSec: [...prevBoss.customNotifyOffsetsSec],
+          };
+        }
+        return { ...b };
+      }),
+    };
+  }
+
+  return sanitizeSharedState(
+    {
+      version: 7,
+      revision: prevShared?.revision || appState?._sharedMeta?.revision || 1,
+      updatedAtMs: options.updatedAtMs ?? appState?._sharedMeta?.updatedAtMs ?? nowMs,
+      updatedBy: options.updatedBy ?? appState?._sharedMeta?.updatedBy ?? '편집자',
+      lastMaintenanceResetMs: appState?.lastMaintenanceResetMs,
+      maintenance: {
+        autoWednesdayReset: appState?.settings?.autoWednesdayReset !== false,
+        maintenanceEndTime: appState?.settings?.maintenanceEndTime || '08:00',
+      },
+      servers,
+    },
+    nowMs
+  );
 }

@@ -3,13 +3,18 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
-import { createDefaultState, sanitizeState } from './src/calculator.js';
+import {
+  createFileKvStore,
+  getEnvHostKey,
+  handleAuthRequest,
+  handleSharedStateRequest,
+} from './shared-server/store.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const PUBLIC_DIR = path.join(__dirname, 'public');
 const DATA_DIR = path.join(__dirname, 'data');
-const DATA_FILE = path.join(DATA_DIR, 'bosses.json');
 const DEFAULT_PORT = Number(process.env.PORT) || 3737;
 
 const MIME_TYPES = {
@@ -32,25 +37,6 @@ const ALLOWED_STATIC_PATHS = new Set([
   '/src/storage.js',
   '/src/timer-worker.js',
 ]);
-
-async function readOrInitState(dataFile) {
-  try {
-    const raw = await fs.readFile(dataFile, 'utf8');
-    const parsed = JSON.parse(raw);
-    return sanitizeState(parsed, Date.now());
-  } catch {
-    const initial = createDefaultState(Date.now());
-    await writeStateFile(dataFile, initial);
-    return initial;
-  }
-}
-
-async function writeStateFile(dataFile, state) {
-  await fs.mkdir(path.dirname(dataFile), { recursive: true });
-  const tmpFile = `${dataFile}.tmp`;
-  await fs.writeFile(tmpFile, JSON.stringify(state, null, 2), 'utf8');
-  await fs.rename(tmpFile, dataFile);
-}
 
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload);
@@ -79,8 +65,39 @@ function readRequestBody(req, maxBytes = 1024 * 1024) {
   });
 }
 
+async function toWebRequest(req, reqUrl) {
+  const headers = new Headers();
+  for (const [k, v] of Object.entries(req.headers || {})) {
+    if (Array.isArray(v)) headers.set(k, v.join(', '));
+    else if (typeof v === 'string') headers.set(k, v);
+  }
+  const method = (req.method || 'GET').toUpperCase();
+  const hasBody = method !== 'GET' && method !== 'HEAD';
+  const body = hasBody ? await readRequestBody(req) : undefined;
+  return new Request(reqUrl.toString(), {
+    method,
+    headers,
+    ...(hasBody ? { body } : {}),
+  });
+}
+
+async function writeWebResponse(res, webRes) {
+  const headersObj = {};
+  webRes.headers.forEach((v, k) => {
+    headersObj[k] = v;
+  });
+  const bodyBuf = Buffer.from(await webRes.arrayBuffer());
+  res.writeHead(webRes.status, headersObj);
+  res.end(bodyBuf);
+}
+
 export function createRequestHandler(options = {}) {
-  const dataFile = options.dataFile || DATA_FILE;
+  const dataDir =
+    options.dataDir || (options.dataFile ? path.dirname(options.dataFile) : DATA_DIR);
+  const kvStore = createFileKvStore(dataDir);
+  const resolveHostKey = () =>
+    options.envHostKey !== undefined ? options.envHostKey : getEnvHostKey();
+
   return async (req, res) => {
     try {
       const reqUrl = new URL(req.url || '/', 'http://127.0.0.1');
@@ -91,29 +108,22 @@ export function createRequestHandler(options = {}) {
         return;
       }
 
-      if (pathname === '/api/state' && req.method === 'GET') {
-        const state = await readOrInitState(dataFile);
-        sendJson(res, 200, { state });
+      if (pathname === '/api/shared-state') {
+        const webReq = await toWebRequest(req, reqUrl);
+        const webRes = await handleSharedStateRequest(webReq, kvStore, resolveHostKey());
+        await writeWebResponse(res, webRes);
         return;
       }
 
-      if (pathname === '/api/state' && req.method === 'PUT') {
-        const rawBody = await readRequestBody(req);
-        let parsed;
-        try {
-          parsed = JSON.parse(rawBody);
-        } catch {
-          sendJson(res, 400, { error: 'Invalid JSON payload' });
-          return;
-        }
-        const clean = sanitizeState(parsed?.state ?? parsed, Date.now());
-        await writeStateFile(dataFile, clean);
-        sendJson(res, 200, { ok: true, state: clean });
+      if (pathname === '/api/auth') {
+        const webReq = await toWebRequest(req, reqUrl);
+        const webRes = await handleAuthRequest(webReq, kvStore, resolveHostKey());
+        await writeWebResponse(res, webRes);
         return;
       }
 
       if (req.method === 'GET' && ALLOWED_STATIC_PATHS.has(pathname)) {
-        const filePath = path.join(__dirname, pathname.slice(1));
+        const filePath = path.join(PUBLIC_DIR, pathname.slice(1));
         const ext = path.extname(filePath);
         const content = await fs.readFile(filePath);
         res.writeHead(200, {
@@ -185,7 +195,7 @@ if (isMain) {
     .then((boundPort) => {
       const url = `http://127.0.0.1:${boundPort}`;
       console.log(`보스 출현 예상 시간 타이머 실행 중: ${url}`);
-      console.log(`데이터 저장 위치: ${DATA_FILE}`);
+      console.log(`데이터 저장 위치: ${DATA_DIR}`);
       console.log('종료하려면 Ctrl+C를 누르세요.');
       if (shouldOpen) {
         openBrowser(url);

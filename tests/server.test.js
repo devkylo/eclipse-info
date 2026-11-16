@@ -6,10 +6,11 @@ import fs from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { createRequestHandler } from '../server.js';
 
-async function invokeHandler(handler, method, url, body = null) {
+async function invokeHandler(handler, method, url, body = null, reqHeaders = {}) {
   const req = Readable.from(body === null ? [] : [Buffer.from(body, 'utf8')]);
   req.method = method;
   req.url = url;
+  req.headers = reqHeaders;
 
   let statusCode = 200;
   let headers = {};
@@ -37,19 +38,18 @@ async function invokeHandler(handler, method, url, body = null) {
   };
 }
 
-async function withTempHandler(fn) {
+async function withTempHandler(fn, options = {}) {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'boss-timer-test-'));
-  const dataFile = path.join(tmpDir, 'bosses.json');
-  const handler = createRequestHandler({ dataFile });
+  const handler = createRequestHandler({ dataDir: tmpDir, ...options });
 
   try {
-    await fn(handler, dataFile);
+    await fn(handler, tmpDir);
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
 }
 
-test('server serves index.html, static modules, icon, and blocks disallowed paths', async () => {
+test('server serves index.html, static modules, icon from public/ and blocks disallowed paths', async () => {
   await withTempHandler(async (handler) => {
     const htmlRes = await invokeHandler(handler, 'GET', '/');
     assert.equal(htmlRes.status, 200);
@@ -72,33 +72,190 @@ test('server serves index.html, static modules, icon, and blocks disallowed path
 
     const traversalRes = await invokeHandler(handler, 'GET', '/../package.json');
     assert.equal(traversalRes.status, 404);
+
+    const fnBlocked = await invokeHandler(handler, 'GET', '/netlify/functions/auth.mjs');
+    assert.equal(fnBlocked.status, 404);
   });
 });
 
-test('server initializes, persists, and validates /api/state', async () => {
-  await withTempHandler(async (handler, dataFile) => {
+test('shared-state and auth enforce view-only, host setup, editor code issuance, conflicts, and revocation', async () => {
+  await withTempHandler(async (handler) => {
     const health = await invokeHandler(handler, 'GET', '/api/health');
     assert.equal(health.status, 200);
     assert.equal(JSON.parse(health.text).mode, 'local-file-server');
 
-    const getRes = await invokeHandler(handler, 'GET', '/api/state');
-    assert.equal(getRes.status, 200);
-    const { state } = JSON.parse(getRes.text);
-    assert.equal(state.activeServerId, 'barkadion-05');
-    assert.equal(state.servers['barkadion-05'].bosses.length, 7);
+    // Anonymous visitor sees shared state in viewer mode, cannot PUT
+    const anonGet = await invokeHandler(handler, 'GET', '/api/shared-state');
+    assert.equal(anonGet.status, 200);
+    const anonJson = JSON.parse(anonGet.text);
+    assert.equal(anonJson.auth.configured, false);
+    assert.equal(anonJson.auth.role, 'viewer');
+    assert.equal(anonJson.sharedState.revision, 1);
+    assert.equal(anonJson.sharedState.servers['barkadion-05'].bosses.length, 7);
 
-    // Modify killDuration of 아르칸다르 (index 6) and global offset
-    state.servers['barkadion-05'].bosses[6].killDurationSec = 120;
-    state.settings.globalNotifyOffsetsSec = [900, 300, 60, 0];
+    const anonPut = await invokeHandler(
+      handler,
+      'PUT',
+      '/api/shared-state',
+      JSON.stringify({ sharedState: anonJson.sharedState, expectedRevision: 1 })
+    );
+    assert.equal(anonPut.status, 401);
 
-    const putRes = await invokeHandler(handler, 'PUT', '/api/state', JSON.stringify({ state }));
-    assert.equal(putRes.status, 200);
+    // Non-host cannot issue editor codes
+    const unauthCreate = await invokeHandler(
+      handler,
+      'POST',
+      '/api/auth',
+      JSON.stringify({ action: 'create_editor', label: '몰래추가' })
+    );
+    assert.equal(unauthCreate.status, 403);
 
-    const savedDisk = JSON.parse(await fs.readFile(dataFile, 'utf8'));
-    assert.equal(savedDisk.servers['barkadion-05'].bosses[6].killDurationSec, 120);
-    assert.deepEqual(savedDisk.settings.globalNotifyOffsetsSec, [900, 300, 60, 0]);
+    // First-time host setup
+    const setupRes = await invokeHandler(
+      handler,
+      'POST',
+      '/api/auth',
+      JSON.stringify({ action: 'setup_host', password: 'host-secret-123' })
+    );
+    assert.equal(setupRes.status, 201);
+    const setupData = JSON.parse(setupRes.text);
+    assert.equal(setupData.role, 'host');
+    assert.ok(setupData.token);
 
-    const badPut = await invokeHandler(handler, 'PUT', '/api/state', '{bad json');
-    assert.equal(badPut.status, 400);
+    // Re-claiming host setup fails
+    const secondSetup = await invokeHandler(
+      handler,
+      'POST',
+      '/api/auth',
+      JSON.stringify({ action: 'setup_host', password: 'attacker-pw' })
+    );
+    assert.equal(secondSetup.status, 409);
+
+    // Host updates shared schedule
+    const hostEdited = structuredClone(anonJson.sharedState);
+    hostEdited.servers['barkadion-05'].bosses[6].killDurationSec = 120;
+    const hostPut = await invokeHandler(
+      handler,
+      'PUT',
+      '/api/shared-state',
+      JSON.stringify({ sharedState: hostEdited, expectedRevision: 1 }),
+      { authorization: `Bearer ${setupData.token}` }
+    );
+    assert.equal(hostPut.status, 200);
+    const hostPutJson = JSON.parse(hostPut.text);
+    assert.equal(hostPutJson.sharedState.revision, 2);
+    assert.equal(hostPutJson.sharedState.updatedBy, '메인 호스트');
+    assert.equal(hostPutJson.sharedState.servers['barkadion-05'].bosses[6].killDurationSec, 120);
+
+    // Stale expectedRevision returns 409 conflict
+    const stalePut = await invokeHandler(
+      handler,
+      'PUT',
+      '/api/shared-state',
+      JSON.stringify({ sharedState: hostEdited, expectedRevision: 1 }),
+      { authorization: `Bearer ${setupData.token}` }
+    );
+    assert.equal(stalePut.status, 409);
+
+    // Host issues editor code for '총무'
+    const createEditorRes = await invokeHandler(
+      handler,
+      'POST',
+      '/api/auth',
+      JSON.stringify({ action: 'create_editor', label: '총무' }),
+      { authorization: `Bearer ${setupData.token}` }
+    );
+    assert.equal(createEditorRes.status, 201);
+    const createdEditor = JSON.parse(createEditorRes.text);
+    assert.match(createdEditor.code, /^EC-[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+
+    // Editor logs in (case-insensitive check for EC codes)
+    const editorLoginRes = await invokeHandler(
+      handler,
+      'POST',
+      '/api/auth',
+      JSON.stringify({ action: 'login', code: createdEditor.code.toLowerCase() })
+    );
+    assert.equal(editorLoginRes.status, 200);
+    const editorLogin = JSON.parse(editorLoginRes.text);
+    assert.equal(editorLogin.role, 'editor');
+    assert.equal(editorLogin.label, '총무');
+
+    // Editor modifies schedule -> revision increments and updatedBy becomes '총무'
+    const editorEdited = structuredClone(hostPutJson.sharedState);
+    editorEdited.servers['barkadion-05'].bosses[2].memo = '북쪽 숲';
+    const editorPut = await invokeHandler(
+      handler,
+      'PUT',
+      '/api/shared-state',
+      JSON.stringify({ sharedState: editorEdited, expectedRevision: 2 }),
+      { authorization: `Bearer ${editorLogin.token}` }
+    );
+    assert.equal(editorPut.status, 200);
+    const editorPutJson = JSON.parse(editorPut.text);
+    assert.equal(editorPutJson.sharedState.revision, 3);
+    assert.equal(editorPutJson.sharedState.updatedBy, '총무');
+
+    // Visitor sees '총무's changes
+    const visitorRes = await invokeHandler(handler, 'GET', '/api/shared-state');
+    const visitorJson = JSON.parse(visitorRes.text);
+    assert.equal(visitorJson.sharedState.revision, 3);
+    assert.equal(visitorJson.sharedState.servers['barkadion-05'].bosses[2].memo, '북쪽 숲');
+
+    // Host revokes editor -> editor token is IMMEDIATELY invalidated
+    const revokeRes = await invokeHandler(
+      handler,
+      'POST',
+      '/api/auth',
+      JSON.stringify({ action: 'revoke_editor', editorId: createdEditor.editor.id }),
+      { authorization: `Bearer ${setupData.token}` }
+    );
+    assert.equal(revokeRes.status, 200);
+
+    const revokedPut = await invokeHandler(
+      handler,
+      'PUT',
+      '/api/shared-state',
+      JSON.stringify({ sharedState: editorEdited, expectedRevision: 3 }),
+      { authorization: `Bearer ${editorLogin.token}` }
+    );
+    assert.equal(revokedPut.status, 401);
+    assert.equal(JSON.parse(revokedPut.text).error, 'REVOKED');
+
+    const revokedAuthGet = await invokeHandler(handler, 'GET', '/api/auth', null, {
+      authorization: `Bearer ${editorLogin.token}`,
+    });
+    const revokedAuthJson = JSON.parse(revokedAuthGet.text);
+    assert.equal(revokedAuthJson.role, 'viewer');
+    assert.equal(revokedAuthJson.revoked, true);
   });
+});
+
+test('HOST_ADMIN_KEY env override locks host setup and authenticates host directly', async () => {
+  await withTempHandler(
+    async (handler) => {
+      const statusRes = await invokeHandler(handler, 'GET', '/api/auth');
+      const statusJson = JSON.parse(statusRes.text);
+      assert.equal(statusJson.configured, true);
+      assert.equal(statusJson.envHostLocked, true);
+
+      const setupBlocked = await invokeHandler(
+        handler,
+        'POST',
+        '/api/auth',
+        JSON.stringify({ action: 'setup_host', password: 'override-attempt' })
+      );
+      assert.equal(setupBlocked.status, 409);
+
+      const loginRes = await invokeHandler(
+        handler,
+        'POST',
+        '/api/auth',
+        JSON.stringify({ action: 'login', code: 'env-master-key-99' })
+      );
+      assert.equal(loginRes.status, 200);
+      assert.equal(JSON.parse(loginRes.text).role, 'host');
+    },
+    { envHostKey: 'env-master-key-99' }
+  );
 });
