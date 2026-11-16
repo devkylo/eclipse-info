@@ -1376,6 +1376,7 @@ export function createDefaultSharedState(referenceMs = Date.now()) {
     revision: 1,
     updatedAtMs: referenceMs,
     updatedBy: '초기 설정',
+    serverOffsetSec: 0,
     lastMaintenanceResetMs: getMostRecentWednesdayResetMs(referenceMs, '08:00'),
     maintenance: {
       autoWednesdayReset: true,
@@ -1402,6 +1403,7 @@ export function sanitizeSharedState(raw, fallbackNowMs = Date.now()) {
         revision: 1,
         updatedAtMs: fallbackNowMs,
         updatedBy: '백업 가져오기',
+        serverOffsetSec: legacy.settings.serverOffsetSec,
         lastMaintenanceResetMs: legacy.lastMaintenanceResetMs,
         maintenance: {
           autoWednesdayReset: legacy.settings.autoWednesdayReset,
@@ -1419,6 +1421,13 @@ export function sanitizeSharedState(raw, fallbackNowMs = Date.now()) {
       : raw.settings && typeof raw.settings === 'object'
         ? raw.settings
         : {};
+  const rawOffset =
+    raw.serverOffsetSec !== undefined
+      ? raw.serverOffsetSec
+      : raw.settings?.serverOffsetSec;
+  const serverOffsetSec = Number.isFinite(Number(rawOffset))
+    ? Math.max(-3600, Math.min(3600, Math.round(Number(rawOffset))))
+    : 0;
   const maintenanceEndTime = normalizeMaintenanceTimeStr(rawMaint.maintenanceEndTime);
   const autoWednesdayReset = rawMaint.autoWednesdayReset !== false;
   const lastMaintenanceResetMs = Number.isFinite(Number(raw.lastMaintenanceResetMs))
@@ -1468,6 +1477,7 @@ export function sanitizeSharedState(raw, fallbackNowMs = Date.now()) {
     revision,
     updatedAtMs,
     updatedBy,
+    serverOffsetSec,
     lastMaintenanceResetMs,
     maintenance: {
       autoWednesdayReset,
@@ -1607,6 +1617,7 @@ export function mergeSharedAndLocalState(sharedState, localPrefs, nowMs = Date.n
     lastMaintenanceResetMs: cleanShared.lastMaintenanceResetMs,
     settings: {
       ...cleanLocal.settings,
+      serverOffsetSec: cleanShared.serverOffsetSec,
       autoWednesdayReset: cleanShared.maintenance.autoWednesdayReset,
       maintenanceEndTime: cleanShared.maintenance.maintenanceEndTime,
     },
@@ -1660,6 +1671,7 @@ export function extractSharedStateFromAppState(appState, options = {}) {
       revision: prevShared?.revision || appState?._sharedMeta?.revision || 1,
       updatedAtMs: options.updatedAtMs ?? appState?._sharedMeta?.updatedAtMs ?? nowMs,
       updatedBy: options.updatedBy ?? appState?._sharedMeta?.updatedBy ?? '편집자',
+      serverOffsetSec: appState?.settings?.serverOffsetSec ?? prevShared?.serverOffsetSec ?? 0,
       lastMaintenanceResetMs: appState?.lastMaintenanceResetMs,
       maintenance: {
         autoWednesdayReset: appState?.settings?.autoWednesdayReset !== false,

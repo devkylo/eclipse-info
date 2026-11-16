@@ -250,6 +250,8 @@ async function refreshFromServer(silent = false) {
   if (isSavingShared) return;
   lastSyncFetchMs = Date.now();
   const prevRev = sharedState.revision;
+  const prevUpdatedAtMs = sharedState.updatedAtMs;
+  const prevServerOffsetSec = sharedState.serverOffsetSec;
   const prevRole = authState.role;
   const prevConfigured = authState.configured;
 
@@ -286,7 +288,11 @@ async function refreshFromServer(silent = false) {
     return;
   }
 
-  const changed = nextShared.revision !== prevRev || authState.role !== prevRole || authState.configured !== prevConfigured;
+  const dataUpdated =
+    nextShared.revision !== prevRev ||
+    nextShared.updatedAtMs !== prevUpdatedAtMs ||
+    nextShared.serverOffsetSec !== prevServerOffsetSec;
+  const changed = dataUpdated || authState.role !== prevRole || authState.configured !== prevConfigured;
   sharedState = nextShared;
 
   if (changed || !silent) {
@@ -300,6 +306,9 @@ async function refreshFromServer(silent = false) {
     renderBossList();
     updateAuthAndSyncUI();
     updateTickDisplays(nowMs);
+    if (silent && dataUpdated) {
+      showToast('자동 동기화', `${sharedState.updatedBy || '호스트'}님의 변경 사항이 반영되었습니다.`);
+    }
   }
 
   if (!silent) {
@@ -326,7 +335,6 @@ function updateAuthAndSyncUI() {
   const roleBadge = $('sync-role-badge');
   const metaBadge = $('sync-meta-badge');
   const btnAuth = $('btn-open-auth');
-  const btnRefresh = $('btn-sync-refresh');
 
   if (!apiAvailable) {
     roleBadge.textContent = '로컬 단독 모드';
@@ -335,10 +343,8 @@ function updateAuthAndSyncUI() {
     btnAuth.textContent = '🔑 로컬 모드';
     btnAuth.className = 'btn btn-ghost btn-sm';
     btnAuth.disabled = true;
-    btnRefresh.classList.add('hidden');
   } else {
     btnAuth.disabled = false;
-    btnRefresh.classList.remove('hidden');
 
     if (authState.role === 'host') {
       roleBadge.textContent = '👑 메인 호스트';
@@ -348,25 +354,30 @@ function updateAuthAndSyncUI() {
     } else if (authState.role === 'editor') {
       roleBadge.textContent = `🔑 편집자 · ${authState.label || '권한자'}`;
       roleBadge.className = 'pill pill-green';
-      btnAuth.textContent = `🔑 ${authState.label || '편집자'}`;
+      btnAuth.textContent = '🔑 권한 관리';
       btnAuth.className = 'btn btn-success btn-sm';
     } else {
       roleBadge.textContent = authState.configured ? '👀 보기 전용' : '⚠️ 호스트 미설정';
       roleBadge.className = authState.configured ? 'pill pill-blue' : 'pill pill-amber';
-      btnAuth.textContent = authState.configured ? '🔑 호스트/권한' : '👑 호스트 초기 설정';
+      btnAuth.textContent = authState.configured ? '🔑 권한 관리' : '👑 호스트 초기 설정';
       btnAuth.className = authState.configured ? 'btn btn-secondary btn-sm' : 'btn btn-warning btn-sm';
     }
 
     if (sharedState.updatedBy && Number.isFinite(sharedState.updatedAtMs)) {
-      metaBadge.textContent = `최근 수정: ${sharedState.updatedBy} · ${formatTimeHHMM(sharedState.updatedAtMs)}`;
+      metaBadge.textContent = `자동 동기화 · 최근 수정: ${sharedState.updatedBy} · ${formatTimeHHMM(sharedState.updatedAtMs)}`;
       metaBadge.classList.remove('hidden');
     } else {
-      metaBadge.classList.add('hidden');
+      metaBadge.textContent = '자동 동기화 활성';
+      metaBadge.classList.remove('hidden');
     }
   }
 
   $('btn-open-maintenance').disabled = !editable;
-  $('btn-add-boss').disabled = !editable;
+  $('btn-open-settings').disabled = !editable;
+  $('btn-settings-add-boss').disabled = !editable;
+  $('set-server-offset').disabled = !editable;
+  $('btn-save-server-offset').disabled = !editable;
+  $('btn-export-json').disabled = !editable;
   $('btn-reset-defaults').disabled = !editable;
   $('inp-import-json').disabled = !editable;
   $('lbl-import-json').classList.toggle('is-disabled', !editable);
@@ -771,7 +782,7 @@ function renderSpotlight(nowMs, force = false) {
   const activeMeta = getServerMeta(appState.activeServerId);
   const boss = findSpotlightBoss(nowMs);
   if (!boss) {
-    const emptyKey = `empty:${activeMeta.id}`;
+    const emptyKey = `empty:${canEditShared() ? '1' : '0'}:${activeMeta.id}`;
     if (!force && currentSpotlightKey === emptyKey) return;
     currentSpotlightKey = emptyKey;
     spotEl.className = 'spotlight-card';
@@ -780,7 +791,11 @@ function renderSpotlight(nowMs, force = false) {
       <div class="spotlight-left">
         <div class="spotlight-kicker">${escapeHtml(activeMeta.name)} · 다음 출현 예정 보스</div>
         <div class="spotlight-name">등록된 보스가 없습니다</div>
-        <div class="spotlight-sub">우측 상단의 '+ 보스 추가' 버튼으로 ${escapeHtml(activeMeta.name)} 서버 보스를 등록하세요.</div>
+        <div class="spotlight-sub">${
+          canEditShared()
+            ? `우측 상단의 '⚙️ 설정 → + 보스 추가하기'로 ${escapeHtml(activeMeta.name)} 서버 보스를 등록하세요.`
+            : `${escapeHtml(activeMeta.name)} 서버에 등록된 보스 시간표가 없습니다.`
+        }</div>
       </div>
     `;
     return;
@@ -871,7 +886,7 @@ function renderSpotlight(nowMs, force = false) {
         <div class="spotlight-countdown" data-spot-countdown>${cdDisplay.countdown}</div>
         <div class="spotlight-countdown-text" data-spot-countdown-text>${escapeHtml(cdDisplay.sub)}</div>
       </div>
-      <div class="spotlight-actions">${actionsHtml}</div>
+      ${editable ? `<div class="spotlight-actions">${actionsHtml}</div>` : ''}
     </div>
   `;
 }
@@ -937,15 +952,18 @@ function buildWorldBossCardHtml(boss, nowMs) {
             data-boss-id="${escapeHtml(boss.id)}"
             title="${boss.notifyEnabled ? '내 브라우저에서 이 보스 알림 끄기' : '내 브라우저에서 이 보스 알림 켜기'}"
           >${boss.notifyEnabled ? '🔔' : '🔕'}</button>
-          <button
-            type="button"
-            class="icon-btn"
-            data-action="edit-boss"
-            data-shared-edit
-            data-boss-id="${escapeHtml(boss.id)}"
-            title="${editable ? '고정 시간 / 알림 수정' : '편집 권한 필요'}"
-            ${disAttr}
-          >✏️</button>
+          ${
+            editable
+              ? `<button
+                  type="button"
+                  class="icon-btn"
+                  data-action="edit-boss"
+                  data-shared-edit
+                  data-boss-id="${escapeHtml(boss.id)}"
+                  title="고정 시간 / 알림 수정"
+                >✏️</button>`
+              : ''
+          }
         </div>
       </div>
 
@@ -956,7 +974,7 @@ function buildWorldBossCardHtml(boss, nowMs) {
           data-action="edit-boss"
           data-shared-edit
           data-boss-id="${escapeHtml(boss.id)}"
-          title="${editable ? '클릭하여 월드 보스 고정 출현 시간 편집' : '보기 전용 모드'}"
+          title="${editable ? '클릭하여 월드 보스 고정 출현 시간 편집' : ''}"
           ${disAttr}
         >
           <div class="spawn-day">
@@ -980,27 +998,30 @@ function buildWorldBossCardHtml(boss, nowMs) {
       <div class="world-schedule-box">
         <div class="world-schedule-top">
           <span class="param-label">고정 출현 시각</span>
-          <div class="param-inputs">
-            <span>유지</span>
-            <input
-              type="number"
-              min="1"
-              max="720"
-              value="${activeMin}"
-              data-inline-param="activeMin"
-              data-shared-edit
-              data-boss-id="${escapeHtml(boss.id)}"
-              aria-label="${escapeHtml(boss.name)} 출현 유지 분"
-              ${disAttr}
-            />
-            <span>분</span>
-          </div>
+          ${
+            editable
+              ? `<div class="param-inputs">
+                  <span>유지</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="720"
+                    value="${activeMin}"
+                    data-inline-param="activeMin"
+                    data-shared-edit
+                    data-boss-id="${escapeHtml(boss.id)}"
+                    aria-label="${escapeHtml(boss.name)} 출현 유지 분"
+                  />
+                  <span>분</span>
+                </div>`
+              : `<span class="world-duration-label">유지 ${activeMin}분</span>`
+          }
         </div>
         <div class="world-time-pills">
           ${
             fixedTimes.length
               ? fixedTimes.map((t) => `<span class="world-time-pill">${escapeHtml(t)}</span>`).join('')
-              : `<span class="empty-muted">고정 시간이 없습니다. ✏️ 버튼을 눌러 추가하세요.</span>`
+              : `<span class="empty-muted">등록된 고정 시간이 없습니다.</span>`
           }
         </div>
       </div>
@@ -1009,17 +1030,20 @@ function buildWorldBossCardHtml(boss, nowMs) {
         <span>${nextAfterStr}</span>
       </div>
 
-      <div class="card-meta-row">
-        <span class="hint-text">출현 정각부터 ${activeMin}분간 빨간 강조</span>
-        <button
-          type="button"
-          class="link-btn"
-          data-action="edit-boss"
-          data-shared-edit
-          data-boss-id="${escapeHtml(boss.id)}"
-          ${disAttr}
-        >${escapeHtml(notifySummary)}</button>
-      </div>
+      ${
+        editable
+          ? `<div class="card-meta-row">
+              <span class="hint-text">출현 정각부터 ${activeMin}분간 유지</span>
+              <button
+                type="button"
+                class="link-btn"
+                data-action="edit-boss"
+                data-shared-edit
+                data-boss-id="${escapeHtml(boss.id)}"
+              >${escapeHtml(notifySummary)}</button>
+            </div>`
+          : ''
+      }
     </article>
   `;
 }
@@ -1077,15 +1101,18 @@ function buildFieldBossCardHtml(boss, nowMs) {
             data-boss-id="${escapeHtml(boss.id)}"
             title="${boss.notifyEnabled ? '내 브라우저에서 이 보스 알림 끄기' : '내 브라우저에서 이 보스 알림 켜기'}"
           >${boss.notifyEnabled ? '🔔' : '🔕'}</button>
-          <button
-            type="button"
-            class="icon-btn"
-            data-action="edit-boss"
-            data-shared-edit
-            data-boss-id="${escapeHtml(boss.id)}"
-            title="${editable ? '상세 설정 / 알림 수정' : '편집 권한 필요'}"
-            ${disAttr}
-          >✏️</button>
+          ${
+            editable
+              ? `<button
+                  type="button"
+                  class="icon-btn"
+                  data-action="edit-boss"
+                  data-shared-edit
+                  data-boss-id="${escapeHtml(boss.id)}"
+                  title="상세 설정 / 알림 수정"
+                >✏️</button>`
+              : ''
+          }
         </div>
       </div>
 
@@ -1096,7 +1123,7 @@ function buildFieldBossCardHtml(boss, nowMs) {
           data-action="quick-time"
           data-shared-edit
           data-boss-id="${escapeHtml(boss.id)}"
-          title="${editable ? '클릭하여 출현/처치 시간 입력' : '보기 전용 모드'}"
+          title="${editable ? '클릭하여 출현/처치 시간 입력' : ''}"
           ${disAttr}
         >
           <div class="spawn-day">
@@ -1117,133 +1144,131 @@ function buildFieldBossCardHtml(boss, nowMs) {
         <div class="progress-fill" data-progress style="width: ${progress}%"></div>
       </div>
 
-      <div class="card-params">
-        <div class="param-group">
-          <div class="param-label">
-            <span>처치 걸리는 시간</span>
-            ${isKillUnset ? `<span class="pill pill-amber" data-unset-pill>미정(0)</span>` : ''}
-          </div>
-          <div class="param-inputs">
-            <input
-              type="number"
-              min="0"
-              max="999"
-              placeholder="미정"
-              value="${killMin}"
-              data-inline-param="killMin"
-              data-shared-edit
-              data-boss-id="${escapeHtml(boss.id)}"
-              aria-label="${escapeHtml(boss.name)} 처치 소요 분"
-              ${disAttr}
-            />
-            <span>분</span>
-            <input
-              type="number"
-              min="0"
-              max="59"
-              placeholder="0"
-              value="${killSec}"
-              data-inline-param="killSec"
-              data-shared-edit
-              data-boss-id="${escapeHtml(boss.id)}"
-              aria-label="${escapeHtml(boss.name)} 처치 소요 초"
-              ${disAttr}
-            />
-            <span>초</span>
-          </div>
-        </div>
+      ${
+        editable
+          ? `<div class="card-params">
+              <div class="param-group">
+                <div class="param-label">
+                  <span>처치 걸리는 시간</span>
+                  ${isKillUnset ? `<span class="pill pill-amber" data-unset-pill>미정(0)</span>` : ''}
+                </div>
+                <div class="param-inputs">
+                  <input
+                    type="number"
+                    min="0"
+                    max="999"
+                    placeholder="미정"
+                    value="${killMin}"
+                    data-inline-param="killMin"
+                    data-shared-edit
+                    data-boss-id="${escapeHtml(boss.id)}"
+                    aria-label="${escapeHtml(boss.name)} 처치 소요 분"
+                  />
+                  <span>분</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="59"
+                    placeholder="0"
+                    value="${killSec}"
+                    data-inline-param="killSec"
+                    data-shared-edit
+                    data-boss-id="${escapeHtml(boss.id)}"
+                    aria-label="${escapeHtml(boss.name)} 처치 소요 초"
+                  />
+                  <span>초</span>
+                </div>
+              </div>
 
-        <div class="param-group">
-          <div class="param-label"><span>리스폰 주기</span></div>
-          <div class="param-inputs">
-            <input
-              type="number"
-              min="0"
-              max="168"
-              value="${respawnHr}"
-              data-inline-param="respawnHr"
-              data-shared-edit
-              data-boss-id="${escapeHtml(boss.id)}"
-              aria-label="${escapeHtml(boss.name)} 리스폰 시간"
-              ${disAttr}
-            />
-            <span>시간</span>
-            <input
-              type="number"
-              min="0"
-              max="59"
-              value="${respawnMin}"
-              data-inline-param="respawnMin"
-              data-shared-edit
-              data-boss-id="${escapeHtml(boss.id)}"
-              aria-label="${escapeHtml(boss.name)} 리스폰 분"
-              ${disAttr}
-            />
-            <span>분</span>
-          </div>
-        </div>
-      </div>
+              <div class="param-group">
+                <div class="param-label"><span>리스폰 주기</span></div>
+                <div class="param-inputs">
+                  <input
+                    type="number"
+                    min="0"
+                    max="168"
+                    value="${respawnHr}"
+                    data-inline-param="respawnHr"
+                    data-shared-edit
+                    data-boss-id="${escapeHtml(boss.id)}"
+                    aria-label="${escapeHtml(boss.name)} 리스폰 시간"
+                  />
+                  <span>시간</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="59"
+                    value="${respawnMin}"
+                    data-inline-param="respawnMin"
+                    data-shared-edit
+                    data-boss-id="${escapeHtml(boss.id)}"
+                    aria-label="${escapeHtml(boss.name)} 리스폰 분"
+                  />
+                  <span>분</span>
+                </div>
+              </div>
+            </div>
 
-      <div class="cycle-preview" data-cycle-preview>
-        <span>예상 처치: <strong>${formatTimeHHMM(expectedKillMs)}</strong></span>
-        <span>이후 다음 젠: <strong>${escapeHtml(afterDay)} ${formatTimeHHMM(afterNextMs)}</strong></span>
-      </div>
+            <div class="cycle-preview" data-cycle-preview>
+              <span>예상 처치: <strong>${formatTimeHHMM(expectedKillMs)}</strong></span>
+              <span>이후 다음 젠: <strong>${escapeHtml(afterDay)} ${formatTimeHHMM(afterNextMs)}</strong></span>
+            </div>
 
-      <div class="card-actions">
-        <button
-          type="button"
-          class="btn btn-xs btn-primary"
-          data-action="expected-cut"
-          data-shared-edit
-          data-boss-id="${escapeHtml(boss.id)}"
-          data-next-cut-btn
-          ${disAttr}
-        >예상 컷 (→ ${formatTimeHHMM(afterNextMs)})</button>
-        <button
-          type="button"
-          class="btn btn-xs btn-success"
-          data-action="killed-now"
-          data-shared-edit
-          data-boss-id="${escapeHtml(boss.id)}"
-          data-kill-now-btn
-          ${disAttr}
-        >지금 컷! (+${escapeHtml(respawnLabel)})</button>
-        <button
-          type="button"
-          class="btn btn-xs btn-secondary"
-          data-action="quick-time"
-          data-shared-edit
-          data-boss-id="${escapeHtml(boss.id)}"
-          ${disAttr}
-        >시간 입력</button>
-        ${
-          boss.previousState
-            ? `<button type="button" class="btn btn-xs btn-ghost" data-action="undo-time" data-shared-edit data-boss-id="${escapeHtml(boss.id)}" ${disAttr}>되돌리기</button>`
-            : ''
-        }
-      </div>
+            <div class="card-actions">
+              <button
+                type="button"
+                class="btn btn-xs btn-primary"
+                data-action="expected-cut"
+                data-shared-edit
+                data-boss-id="${escapeHtml(boss.id)}"
+                data-next-cut-btn
+              >예상 컷 (→ ${formatTimeHHMM(afterNextMs)})</button>
+              <button
+                type="button"
+                class="btn btn-xs btn-success"
+                data-action="killed-now"
+                data-shared-edit
+                data-boss-id="${escapeHtml(boss.id)}"
+                data-kill-now-btn
+              >지금 컷! (+${escapeHtml(respawnLabel)})</button>
+              <button
+                type="button"
+                class="btn btn-xs btn-secondary"
+                data-action="quick-time"
+                data-shared-edit
+                data-boss-id="${escapeHtml(boss.id)}"
+              >시간 입력</button>
+              ${
+                boss.previousState
+                  ? `<button type="button" class="btn btn-xs btn-ghost" data-action="undo-time" data-shared-edit data-boss-id="${escapeHtml(boss.id)}">되돌리기</button>`
+                  : ''
+              }
+            </div>
 
-      <div class="card-meta-row">
-        <label class="inline-check">
-          <input
-            type="checkbox"
-            ${boss.autoRollover ? 'checked' : ''}
-            data-action="toggle-auto-rollover"
-            data-shared-edit
-            data-boss-id="${escapeHtml(boss.id)}"
-            ${disAttr}
-          />
-          <span>자동 다음 주기 갱신</span>
-        </label>
-        <button
-          type="button"
-          class="link-btn"
-          data-action="edit-boss"
-          data-shared-edit
-          data-boss-id="${escapeHtml(boss.id)}"
-          ${disAttr}
-        >${escapeHtml(notifySummary)}</button>
-      </div>
+            <div class="card-meta-row">
+              <label class="inline-check">
+                <input
+                  type="checkbox"
+                  ${boss.autoRollover ? 'checked' : ''}
+                  data-action="toggle-auto-rollover"
+                  data-shared-edit
+                  data-boss-id="${escapeHtml(boss.id)}"
+                />
+                <span>자동 다음 주기 갱신</span>
+              </label>
+              <button
+                type="button"
+                class="link-btn"
+                data-action="edit-boss"
+                data-shared-edit
+                data-boss-id="${escapeHtml(boss.id)}"
+              >${escapeHtml(notifySummary)}</button>
+            </div>`
+          : `<div class="cycle-preview" data-cycle-preview>
+              <span>리스폰 <strong>${escapeHtml(respawnLabel)}</strong> · 예상 처치 <strong>${formatTimeHHMM(expectedKillMs)}</strong></span>
+              <span>이후 다음 젠: <strong>${escapeHtml(afterDay)} ${formatTimeHHMM(afterNextMs)}</strong></span>
+            </div>`
+      }
     </article>
   `;
 }
@@ -1281,7 +1306,7 @@ function renderBossList() {
     listEl.innerHTML = `
       <div class="panel" style="text-align: center; padding: 32px;">
         <p style="margin:0 0 12px; color: var(--text-muted);">${escapeHtml(activeMeta.name)} 서버에 표시할 보스가 없습니다.</p>
-        <button class="btn btn-primary" id="btn-empty-add" type="button" ${editable ? '' : 'disabled'}>+ 보스 추가하기</button>
+        ${editable ? `<button class="btn btn-primary" id="btn-empty-add" type="button">+ 보스 추가하기</button>` : ''}
       </div>
     `;
     const emptyBtn = $('btn-empty-add');
@@ -1310,7 +1335,7 @@ function renderBossList() {
         <section class="boss-section">
           <div class="boss-section-header">
             <span class="pill type-badge-world">월드 보스</span>
-            <span>고정 시간 출현 (1시간 유지 · 출현 시 빨간 강조)</span>
+            <span>고정 시간 출현 (1시간 유지)</span>
             <span class="pill pill-muted">${worldBosses.length}</span>
           </div>
           <div class="boss-grid">
@@ -1325,7 +1350,7 @@ function renderBossList() {
         <section class="boss-section">
           <div class="boss-section-header">
             <span class="pill type-badge-field">필드 보스</span>
-            <span>처치 시간 반영 리스폰 (10분 전부터 빨간 강조)</span>
+            <span>처치 시간 반영 리스폰</span>
             <span class="pill pill-muted">${fieldBosses.length}</span>
           </div>
           <div class="boss-grid">
@@ -1605,17 +1630,20 @@ function startTickEngine() {
       if (apiAvailable && !document.hidden) {
         refreshFromServer(true);
       }
-    }, 30000);
+    }, 5000);
   }
 
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) {
-      handleTick();
-      if (apiAvailable && Date.now() - lastSyncFetchMs > 5000) {
-        refreshFromServer(true);
-      }
+  const triggerImmediateSync = () => {
+    handleTick();
+    if (apiAvailable && Date.now() - lastSyncFetchMs > 2000) {
+      refreshFromServer(true);
     }
+  };
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) triggerImmediateSync();
   });
+  window.addEventListener('focus', triggerImmediateSync);
 }
 
 function addGlobalOffset(offsetSec) {
@@ -2152,11 +2180,7 @@ function bindEvents() {
     }
   });
 
-  // Topbar sync & auth actions
-  $('btn-sync-refresh').addEventListener('click', () => {
-    refreshFromServer(false);
-  });
-
+  // Topbar auth action
   $('btn-open-auth').addEventListener('click', openAuthModal);
 
   $('btn-notify-perm').addEventListener('click', async () => {
@@ -2319,15 +2343,21 @@ function bindEvents() {
     }
   });
 
-  $('btn-add-boss').addEventListener('click', () => {
+  $('btn-settings-add-boss').addEventListener('click', () => {
     if (!canEditShared()) {
       requireEditPermissionToast();
       return;
     }
+    closeModal('modal-settings');
     openBossModal(null);
   });
 
   $('btn-open-settings').addEventListener('click', () => {
+    if (!canEditShared()) {
+      requireEditPermissionToast();
+      return;
+    }
+    $('settings-server-name').textContent = getServerMeta(appState.activeServerId).name;
     $('set-server-offset').value = String(appState.settings.serverOffsetSec || 0);
     updateAuthAndSyncUI();
     openModal('modal-settings');
@@ -2937,17 +2967,30 @@ function bindEvents() {
     showToast('비밀번호 변경 완료', '새 호스트 비밀번호가 적용되었습니다.');
   });
 
-  // Global settings & backup
-  $('btn-save-server-offset').addEventListener('click', () => {
+  // Global settings & backup (Host / Editor only)
+  $('btn-save-server-offset').addEventListener('click', async () => {
+    if (!canEditShared()) {
+      requireEditPermissionToast();
+      return;
+    }
     const val = Math.round(Number($('set-server-offset').value || 0));
     appState.settings.serverOffsetSec = Math.max(-3600, Math.min(3600, val));
-    persistLocalOnly();
     renderGlobalNotifyControls();
     renderBossList();
-    showToast('시계 보정 적용', `내 PC 서버 오차 보정: ${appState.settings.serverOffsetSec}초`);
+    const saved = await persistSharedChange({ preserveBossNotifyDefaults: true });
+    if (saved) {
+      showToast(
+        '시계 보정 공용 적용',
+        `인게임 서버 오차 보정(${appState.settings.serverOffsetSec}초)이 모든 방문자에게 반영됩니다.`
+      );
+    }
   });
 
   $('btn-export-json').addEventListener('click', () => {
+    if (!canEditShared()) {
+      requireEditPermissionToast();
+      return;
+    }
     const blob = new Blob([JSON.stringify(appState, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');

@@ -45,23 +45,17 @@
         </div>
 
         <div class="topbar-actions">
-          <button id="btn-sync-refresh" class="btn btn-ghost btn-sm" type="button" title="공용 보스 시간표 지금 새로고침">
-            🔄 동기화
-          </button>
-          <button id="btn-open-auth" class="btn btn-secondary" type="button" title="호스트 로그인 및 편집 권한 관리">
-            🔑 호스트/권한
-          </button>
           <button id="btn-notify-perm" class="btn btn-secondary" type="button">
-            🔔 알림 권한 확인
+            🔔 데스크톱 알림 허용하기
           </button>
           <button id="btn-copy-schedule" class="btn btn-secondary" type="button">
             🖼️ 시간표 이미지 복사
           </button>
+          <button id="btn-open-auth" class="btn btn-secondary" type="button" title="호스트 로그인 및 편집 권한 관리">
+            🔑 권한 관리
+          </button>
           <button id="btn-open-maintenance" class="btn btn-warning" type="button" title="수요일 정기점검 리셋 및 시간 설정">
             🔄 정기점검 리셋
-          </button>
-          <button id="btn-add-boss" class="btn btn-primary" type="button">
-            + 보스 추가
           </button>
           <button id="btn-open-settings" class="btn btn-ghost" type="button" title="환경 설정 및 백업">
             ⚙️ 설정
@@ -180,7 +174,7 @@
             <button type="button" class="world-pill" data-boss-filter="field">필드 보스</button>
           </div>
           <span class="hint-text">
-            월드 보스는 출현 시간(1시간), 필드 보스는 10분 전부터 빨간색으로 표시되며 시간 임박 시 맨 위로 이동합니다.
+            출현 시간이 임박한 보스가 목록 상단으로 자동 정렬됩니다.
           </span>
         </div>
         <div class="toolbar-right">
@@ -442,6 +436,21 @@
           <button class="btn btn-xs btn-ghost modal-close" data-close="modal-settings" type="button">✕</button>
         </div>
         <div class="modal-body">
+          <div class="field-box">
+            <div class="field-box-header">
+              <span class="field-box-title">➕ 보스 추가</span>
+              <span id="settings-server-name" class="pill pill-blue">바르카디온 05</span>
+            </div>
+            <p class="field-hint" style="margin: 0;">
+              현재 선택된 서버에 새 월드 보스 또는 필드 보스를 등록합니다.
+            </p>
+            <div>
+              <button id="btn-settings-add-boss" class="btn btn-primary btn-sm" type="button">
+                + 보스 추가하기
+              </button>
+            </div>
+          </div>
+
           <div class="field">
             <span>인게임 서버 시계 오차 보정 (초)</span>
             <div class="duration-inputs">
@@ -449,7 +458,7 @@
               <span>초</span>
               <button id="btn-save-server-offset" class="btn btn-xs btn-primary" type="button">적용</button>
             </div>
-            <small class="field-hint">PC 시계가 게임 서버보다 느리면 양수(+), 빠르면 음수(-)를 입력하세요.</small>
+            <small class="field-hint">PC 시계가 게임 서버보다 느리면 양수(+), 빠르면 음수(-)를 입력하세요. (적용 시 모든 방문자에게 공용 반영됩니다)</small>
           </div>
 
           <div class="field-box">

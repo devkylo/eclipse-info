@@ -435,6 +435,7 @@ test('Wednesday maintenance scheduling, auto-reset, manual modes, and notice par
 test('shared state and local prefs merge cleanly and preserve unshown shared servers', () => {
   const ref = makeRefTime(16, 28, 0);
   let shared = createDefaultSharedState(ref);
+  shared.serverOffsetSec = 5;
   shared.servers['heskarion-01'] = {
     bosses: [
       {
@@ -454,6 +455,7 @@ test('shared state and local prefs merge cleanly and preserve unshown shared ser
   let local = createDefaultLocalPrefs();
   local.activeServerId = 'barkadion-05';
   local.settings.soundEnabled = false;
+  local.settings.serverOffsetSec = 99;
   local.bossNotifyOverrides = {
     'barkadion-05': {
       remanent: { notifyEnabled: false },
@@ -463,6 +465,7 @@ test('shared state and local prefs merge cleanly and preserve unshown shared ser
 
   let merged = mergeSharedAndLocalState(shared, local, ref);
   assert.equal(merged.settings.soundEnabled, false);
+  assert.equal(merged.settings.serverOffsetSec, 5);
   assert.equal(merged.servers['barkadion-05'].bosses.find((b) => b.id === 'remanent').notifyEnabled, false);
   assert.equal(merged.servers['heskarion-01'].bosses[0].name, '벨카르');
 
@@ -477,6 +480,7 @@ test('shared state and local prefs merge cleanly and preserve unshown shared ser
     preserveBossNotifyDefaults: true,
     updatedBy: '총무',
   });
+  assert.equal(extracted.serverOffsetSec, 5);
   assert.equal(extracted.servers['heskarion-01'].bosses[0].name, '벨카르');
   // Preserve shared notifyEnabled default even when editor locally muted remanent bell
   assert.equal(extracted.servers['barkadion-05'].bosses.find((b) => b.id === 'remanent').notifyEnabled, true);
