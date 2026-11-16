@@ -1,0 +1,12 @@
+{
+  "name": "eclipse-info",
+  "version": "1.0.0",
+  "description": "이클립스: 더 어웨이크닝 서버별 보스 출현 예상 시간 및 알림 도구",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "open": "node server.js --open",
+    "test": "node --test tests/*.test.js"
+  }
+}

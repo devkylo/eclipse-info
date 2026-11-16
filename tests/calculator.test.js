@@ -1,0 +1,376 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  ALL_SERVERS,
+  DEFAULT_SERVER_ID,
+  getServerMeta,
+  getOrderedServerTabs,
+  toggleServerFavorite,
+  moveServerTab,
+  getActiveServerData,
+  addOrSelectServer,
+  removeServerTab,
+  createDefaultState,
+  isWorldBoss,
+  isBossRedAlert,
+  getWorldBossWindow,
+  getEffectiveKillSec,
+  getAfterNextSpawnMs,
+  recomputeBossTarget,
+  advanceBossCycle,
+  setBossTimeByMode,
+  undoBossTimeChange,
+  applyAutoRollover,
+  findDueAlerts,
+  getBossStatus,
+  sortBosses,
+  formatCountdown,
+  formatRelativeDayLabel,
+  formatScheduleForShare,
+  parseTimeString,
+  buildTimestampOnDay,
+  getMostRecentWednesdayResetMs,
+  getNextWednesdayResetMs,
+  parseMaintenanceEndTimeFromText,
+  resetFieldBossesForMaintenance,
+  applyManualMaintenanceReset,
+  applyScheduledWednesdayReset,
+  sanitizeState,
+} from '../src/calculator.js';
+
+// Fixed reference timestamp: 2026-11-16 16:28:30 local time (Monday)
+function makeRefTime(hh = 16, mm = 28, ss = 30) {
+  const d = new Date(2026, 10, 16, hh, mm, ss, 0);
+  return d.getTime();
+}
+
+test('ALL_SERVERS defines 36 servers and 바르카디온 05 initializes 2 world + 5 field bosses', () => {
+  assert.equal(ALL_SERVERS.length, 36);
+  const names = new Set(ALL_SERVERS.map((s) => s.name));
+  for (const world of ['헤스카리온', '세라하', '발키리아', '바르카디온', '발제라', '셀린']) {
+    for (let i = 1; i <= 6; i += 1) {
+      assert.ok(names.has(`${world} ${String(i).padStart(2, '0')}`));
+    }
+  }
+
+  const ref = makeRefTime(16, 28, 30);
+  const state = createDefaultState(ref);
+  assert.equal(state.version, 5);
+  assert.equal(state.hasSelectedInitialServer, false);
+  assert.equal(state.activeServerId, 'barkadion-05');
+  assert.equal(state.serverTabs.length, 1);
+
+  const bosses = getActiveServerData(state).bosses;
+  assert.equal(bosses.length, 7);
+
+  const byName = Object.fromEntries(bosses.map((b) => [b.name, b]));
+  assert.equal(byName['크라카'].bossType, 'world');
+  assert.deepEqual(byName['크라카'].fixedTimes, ['12:00', '20:00']);
+  assert.equal(byName['크라카'].activeDurationSec, 3600);
+
+  assert.equal(byName['에버하르트'].bossType, 'world');
+  assert.deepEqual(byName['에버하르트'].fixedTimes, ['12:00', '20:00']);
+  assert.equal(byName['에버하르트'].activeDurationSec, 3600);
+
+  assert.equal(byName['레마넌트'].bossType, 'field');
+  assert.equal(byName['레마넌트'].killDurationSec, 60);
+  assert.equal(byName['레마넌트'].respawnDurationSec, 8 * 3600);
+  assert.equal(byName['레마넌트'].nextSpawnMs, makeRefTime(16, 20, 0));
+
+  assert.equal(byName['베나토리아'].nextSpawnMs, makeRefTime(16, 31, 0));
+  assert.equal(byName['샤렐나'].nextSpawnMs, makeRefTime(18, 57, 0));
+  assert.equal(byName['칼리브락스'].nextSpawnMs, makeRefTime(20, 49, 0));
+  assert.equal(byName['아르칸다르'].killDurationSec, null);
+  assert.equal(getEffectiveKillSec(byName['아르칸다르']), 0);
+  assert.equal(byName['아르칸다르'].nextSpawnMs, makeRefTime(20, 56, 0));
+});
+
+test('World Boss turns red only during 1h spawn window and moves across 12:00 / 20:00', () => {
+  const state = createDefaultState(makeRefTime(11, 55, 0));
+  const kraka = getActiveServerData(state).bosses.find((b) => b.name === '크라카');
+  assert.equal(isWorldBoss(kraka), true);
+
+  // 11:55 -> 5m before 12:00 -> upcoming, NOT red yet!
+  assert.equal(getBossStatus(kraka, makeRefTime(11, 55, 0)), 'upcoming');
+  assert.equal(isBossRedAlert(kraka, makeRefTime(11, 55, 0)), false);
+
+  // 12:00:00 -> world_active -> RED!
+  assert.equal(getBossStatus(kraka, makeRefTime(12, 0, 0)), 'world_active');
+  assert.equal(isBossRedAlert(kraka, makeRefTime(12, 0, 0)), true);
+
+  // 12:59:59 -> still active for 1 hour -> RED!
+  const win1259 = getWorldBossWindow(kraka, makeRefTime(12, 59, 59));
+  assert.equal(win1259.isActiveNow, true);
+  assert.equal(win1259.windowEndMs, makeRefTime(13, 0, 0));
+  assert.equal(isBossRedAlert(kraka, makeRefTime(12, 59, 59)), true);
+
+  // 13:00:00 -> finished 12:00 window, shifts to 20:00 -> NOT red
+  const win1300 = getWorldBossWindow(kraka, makeRefTime(13, 0, 0));
+  assert.equal(win1300.isActiveNow, false);
+  assert.equal(win1300.nextStartMs, makeRefTime(20, 0, 0));
+  assert.equal(getBossStatus(kraka, makeRefTime(13, 0, 0)), 'scheduled');
+  assert.equal(isBossRedAlert(kraka, makeRefTime(13, 0, 0)), false);
+
+  // 20:30:00 -> active until 21:00 -> RED!
+  assert.equal(getBossStatus(kraka, makeRefTime(20, 30, 0)), 'world_active');
+  assert.equal(isBossRedAlert(kraka, makeRefTime(20, 30, 0)), true);
+
+  // 21:00:00 -> shifts to next day 12:00
+  const win2100 = getWorldBossWindow(kraka, makeRefTime(21, 0, 0));
+  assert.equal(win2100.isActiveNow, false);
+  assert.equal(win2100.nextStartMs, new Date(2026, 10, 17, 12, 0, 0, 0).getTime());
+});
+
+test('Field Boss turns red from 10 minutes before spawn through kill window', () => {
+  const ref = makeRefTime(16, 20, 0);
+  const state = createDefaultState(ref);
+  const venatoria = getActiveServerData(state).bosses.find((b) => b.name === '베나토리아'); // 16:31
+
+  // 16:20:59 (10m 01s before) -> upcoming, NOT red
+  assert.equal(getBossStatus(venatoria, makeRefTime(16, 20, 59)), 'upcoming');
+  assert.equal(isBossRedAlert(venatoria, makeRefTime(16, 20, 59)), false);
+
+  // 16:21:00 (10m 00s before) -> imminent, RED!
+  assert.equal(getBossStatus(venatoria, makeRefTime(16, 21, 0)), 'imminent');
+  assert.equal(isBossRedAlert(venatoria, makeRefTime(16, 21, 0)), true);
+
+  // 16:31:30 (during 1m kill window) -> spawning_now, RED!
+  assert.equal(getBossStatus(venatoria, makeRefTime(16, 31, 30)), 'spawning_now');
+  assert.equal(isBossRedAlert(venatoria, makeRefTime(16, 31, 30)), true);
+
+  // 16:35:00 (overdue if autoRollover off) -> NOT red
+  assert.equal(getBossStatus(venatoria, makeRefTime(16, 35, 0)), 'overdue');
+  assert.equal(isBossRedAlert(venatoria, makeRefTime(16, 35, 0)), false);
+});
+
+test('sortBosses puts active and approaching bosses at the very top', () => {
+  const ref = makeRefTime(16, 28, 0);
+  const state = createDefaultState(ref);
+  const bosses = getActiveServerData(state).bosses;
+
+  // At 16:28: 베나토리아(16:31) < 샤렐나(18:57) < 크라카/에버하르트(20:00) < 칼리브락스(20:49) < 아르칸다르(20:56) < 레마넌트(overdue 16:20)
+  const sorted1628 = sortBosses(bosses, 'soonest', ref);
+  assert.deepEqual(
+    sorted1628.map((b) => b.name),
+    ['베나토리아', '샤렐나', '에버하르트', '크라카', '칼리브락스', '아르칸다르', '레마넌트']
+  );
+
+  // At 20:15: 크라카 and 에버하르트 are active (20:00~21:00) -> sit at the very top!
+  const sorted2015 = sortBosses(bosses, 'soonest', makeRefTime(20, 15, 0));
+  assert.deepEqual(sorted2015.slice(0, 2).map((b) => b.name), ['에버하르트', '크라카']);
+});
+
+test('multi-server selection, favorites priority, tab reordering, and removal', () => {
+  const ref = makeRefTime(16, 28, 0);
+  let state = createDefaultState(ref);
+
+  state = addOrSelectServer(state, 'seraha-02', 'empty', ref);
+  assert.equal(state.hasSelectedInitialServer, true);
+  assert.equal(state.activeServerId, 'seraha-02');
+  assert.equal(getActiveServerData(state).bosses.length, 0);
+
+  state = addOrSelectServer(state, 'heskarion-01', 'preset', ref);
+  assert.equal(state.activeServerId, 'heskarion-01');
+  assert.equal(getActiveServerData(state).bosses.length, 7);
+
+  state.serverTabs = toggleServerFavorite(state.serverTabs, 'heskarion-01');
+  assert.deepEqual(
+    getOrderedServerTabs(state.serverTabs).map((t) => t.id),
+    ['barkadion-05', 'heskarion-01', 'seraha-02']
+  );
+
+  state.serverTabs = moveServerTab(state.serverTabs, 'heskarion-01', -1);
+  assert.deepEqual(
+    state.serverTabs.map((t) => t.id),
+    ['heskarion-01', 'barkadion-05', 'seraha-02']
+  );
+
+  state = removeServerTab(state, 'heskarion-01');
+  assert.equal(state.activeServerId, 'barkadion-05');
+  state = removeServerTab(state, 'seraha-02');
+  assert.equal(state.serverTabs.length, 1);
+  state = removeServerTab(state, 'barkadion-05');
+  assert.equal(state.serverTabs.length, 1);
+});
+
+test('getAfterNextSpawnMs and advanceBossCycle work for Field Bosses and skip World Bosses', () => {
+  const ref = makeRefTime(16, 28, 0);
+  const state = createDefaultState(ref);
+  const bosses = getActiveServerData(state).bosses;
+  const rem = bosses.find((b) => b.name === '레마넌트');
+  const ven = bosses.find((b) => b.name === '베나토리아');
+  const kraka = bosses.find((b) => b.name === '크라카');
+
+  const expected = new Date(2026, 10, 17, 0, 32, 0, 0).getTime();
+  assert.equal(getAfterNextSpawnMs(ven, ref), expected);
+  assert.equal(formatRelativeDayLabel(expected, ref), '내일');
+
+  const advanced = advanceBossCycle(rem, 'expected_cut', ref);
+  assert.equal(advanced.nextSpawnMs, new Date(2026, 10, 17, 0, 21, 0, 0).getTime());
+
+  const editedKill = recomputeBossTarget({ ...advanced, killDurationSec: 180 });
+  assert.equal(editedKill.nextSpawnMs, new Date(2026, 10, 17, 0, 23, 0, 0).getTime());
+
+  const undoneFuture = undoBossTimeChange(advanced, makeRefTime(16, 15, 0));
+  assert.equal(undoneFuture.autoRollover, true);
+  const undonePast = undoBossTimeChange(advanced, makeRefTime(16, 28, 0));
+  assert.equal(undonePast.autoRollover, false);
+
+  // World Boss ignores field-only cycle advance & autoRollover
+  assert.equal(advanceBossCycle(kraka, 'killed_now', ref), kraka);
+  assert.equal(applyAutoRollover(kraka, ref), kraka);
+});
+
+test('findDueAlerts triggers for both Field Bosses and World Bosses and deduplicates', () => {
+  const ref = makeRefTime(16, 28, 0);
+  const state = createDefaultState(ref);
+  state.settings.globalNotifyOffsetsSec = [300, 60, 0];
+  const bosses = getActiveServerData(state).bosses;
+  const serverMeta = getServerMeta(DEFAULT_SERVER_ID);
+
+  const fired = new Set();
+
+  // Field boss 5m alert at 16:26:05
+  const due1 = findDueAlerts(bosses, state.settings, makeRefTime(16, 26, 5), fired, 20, serverMeta);
+  assert.equal(due1.length, 1);
+  assert.equal(due1[0].bossName, '베나토리아');
+  fired.add(due1[0].alertKey);
+  assert.equal(findDueAlerts(bosses, state.settings, makeRefTime(16, 26, 6), fired, 20, serverMeta).length, 0);
+
+  // World boss 5m alert at 19:55:05 (for 20:00 크라카 + 에버하르트)
+  const worldDue5m = findDueAlerts(bosses, state.settings, makeRefTime(19, 55, 5), new Set(), 20, serverMeta);
+  assert.equal(worldDue5m.length, 2);
+  assert.deepEqual(worldDue5m.map((d) => d.bossName).sort(), ['에버하르트', '크라카']);
+
+  // World boss exact-spawn alert at 20:00:05 (already active windowStartMs)
+  const worldDue0s = findDueAlerts(bosses, state.settings, makeRefTime(20, 0, 5), new Set(), 20, serverMeta);
+  assert.equal(worldDue0s.length, 2);
+  assert.ok(worldDue0s.every((d) => d.offsetSec === 0));
+});
+
+test('sanitizeState upgrades v1/v2/v3 data into v4 and injects world bosses safely', () => {
+  const ref = makeRefTime(16, 28, 0);
+  const v3 = {
+    version: 3,
+    hasSelectedInitialServer: true,
+    activeServerId: 'barkadion-05',
+    serverTabs: [{ id: 'barkadion-05', favorite: true }],
+    servers: {
+      'barkadion-05': {
+        bosses: [{ id: 'remanent', name: '레마넌트', respawnDurationSec: 28800, nextSpawnMs: ref }],
+        alertLogs: [],
+      },
+    },
+  };
+
+  const upgraded = sanitizeState(v3, ref);
+  assert.equal(upgraded.version, 5);
+  const bosses = getActiveServerData(upgraded).bosses;
+  assert.equal(bosses.length, 3); // 크라카, 에버하르트 + 레마넌트
+  assert.equal(bosses[0].bossType, 'world');
+  assert.equal(bosses[1].bossType, 'world');
+  assert.equal(bosses[2].bossType, 'field');
+
+  // Share text formats both world and field cleanly
+  const share = formatScheduleForShare(bosses, ref, '바르카디온 05');
+  assert.match(share, /\[월드\] 크라카/);
+  assert.match(share, /\[필드\] 레마넌트/);
+});
+
+test('formatting and parsing helpers work accurately', () => {
+  const ref = makeRefTime(16, 28, 0);
+  assert.equal(formatCountdown(3 * 60 * 1000), '03:00');
+  assert.equal(formatCountdown(-8 * 60 * 1000), '+08:00');
+  assert.deepEqual(parseTimeString('08:05'), { hours: 8, minutes: 5, seconds: 0 });
+  assert.equal(parseTimeString('25:99'), null);
+  assert.equal(buildTimestampOnDay('00:32', ref, 1), new Date(2026, 10, 17, 0, 32, 0, 0).getTime());
+  assert.equal(
+    setBossTimeByMode(getActiveServerData(createDefaultState(ref)).bosses[6], 'kill', makeRefTime(8, 56, 0)).nextSpawnMs,
+    makeRefTime(20, 56, 0)
+  );
+});
+
+test('Wednesday maintenance scheduling, auto-reset, manual modes, and notice parsing', () => {
+  // 2026-11-16 is Monday -> recent Wed 2026-11-11 08:00, next Wed 2026-11-18 08:00
+  const mon = new Date(2026, 10, 16, 18, 45, 0, 0).getTime();
+  assert.equal(
+    getMostRecentWednesdayResetMs(mon, '08:00'),
+    new Date(2026, 10, 11, 8, 0, 0, 0).getTime()
+  );
+  assert.equal(
+    getNextWednesdayResetMs(mon, '08:00'),
+    new Date(2026, 10, 18, 8, 0, 0, 0).getTime()
+  );
+
+  // Wednesday before 08:00 -> still points to previous Wednesday as most recent
+  const wed0759 = new Date(2026, 10, 18, 7, 59, 59, 0).getTime();
+  assert.equal(
+    getMostRecentWednesdayResetMs(wed0759, '08:00'),
+    new Date(2026, 10, 11, 8, 0, 0, 0).getTime()
+  );
+
+  // Wednesday at 08:00 -> flips to 2026-11-18 08:00
+  const wed0800 = new Date(2026, 10, 18, 8, 0, 0, 0).getTime();
+  assert.equal(getMostRecentWednesdayResetMs(wed0800, '08:00'), wed0800);
+
+  // Notice text parser extracts end time accurately
+  assert.equal(parseMaintenanceEndTimeFromText('2026년 11월 11일(수) 05:00 ~ 08:00'), '08:00');
+  assert.equal(parseMaintenanceEndTimeFromText('점검 연장 안내: 04:30 ~ 09:30'), '09:30');
+  assert.equal(parseMaintenanceEndTimeFromText('종료 예정 8:15'), '08:15');
+
+  // Auto-reset does NOT wipe Monday initial times
+  let state = createDefaultState(mon);
+  assert.equal(applyScheduledWednesdayReset(state, mon).didReset, false);
+  assert.equal(applyScheduledWednesdayReset(state, wed0759).didReset, false);
+
+  // Auto-reset triggers once at Wednesday 08:00 -> Field bosses reset to 08:00 (spawning_now), World bosses untouched
+  const resAtOpen = applyScheduledWednesdayReset(state, wed0800);
+  assert.equal(resAtOpen.didReset, true);
+  state = resAtOpen.state;
+
+  const bossesAt0800 = getActiveServerData(state).bosses;
+  const kraka = bossesAt0800.find((b) => b.name === '크라카');
+  const ven = bossesAt0800.find((b) => b.name === '베나토리아');
+  const ark = bossesAt0800.find((b) => b.name === '아르칸다르');
+  assert.deepEqual(kraka.fixedTimes, ['12:00', '20:00']);
+  assert.equal(ven.nextSpawnMs, wed0800);
+  assert.equal(getBossStatus(ven, wed0800), 'spawning_now');
+  assert.equal(ark.nextSpawnMs, wed0800);
+
+  // Second tick at 08:00:05 does NOT reset again
+  assert.equal(applyScheduledWednesdayReset(state, wed0800 + 5000).didReset, false);
+
+  // Opening late on Wednesday at 11:00 auto-rolls from 08:00 spawn -> 08:00 + killDuration + respawn
+  const wed1100 = new Date(2026, 10, 18, 11, 0, 0, 0).getTime();
+  const lateState = createDefaultState(mon);
+  const resLate = applyScheduledWednesdayReset(lateState, wed1100);
+  assert.equal(resLate.didReset, true);
+  const lateByName = Object.fromEntries(getActiveServerData(resLate.state).bosses.map((b) => [b.name, b]));
+  assert.equal(lateByName['레마넌트'].nextSpawnMs, new Date(2026, 10, 18, 16, 1, 0, 0).getTime()); // 08:00 + 1m + 8h
+  assert.equal(lateByName['샤렐나'].nextSpawnMs, new Date(2026, 10, 18, 18, 1, 0, 0).getTime()); // 08:00 + 1m + 10h
+  assert.equal(lateByName['칼리브락스'].nextSpawnMs, new Date(2026, 10, 18, 20, 1, 0, 0).getTime()); // 08:00 + 1m + 12h
+  assert.equal(lateByName['아르칸다르'].nextSpawnMs, new Date(2026, 10, 18, 20, 0, 0, 0).getTime()); // 08:00 + 0m + 12h
+
+  // Manual extended maintenance reset to 09:30 with undo preserved
+  const wed0930 = new Date(2026, 10, 18, 9, 30, 0, 0).getTime();
+  const manualAfter = applyManualMaintenanceReset(
+    createDefaultState(mon),
+    wed0930,
+    { scope: 'all', mode: 'after_cycle' },
+    wed0930
+  );
+  const manualRem = getActiveServerData(manualAfter).bosses.find((b) => b.name === '레마넌트');
+  assert.equal(manualRem.nextSpawnMs, new Date(2026, 10, 18, 17, 31, 0, 0).getTime());
+  assert.ok(manualRem.previousState);
+  const restored = undoBossTimeChange(manualRem, mon);
+  assert.equal(restored.nextSpawnMs, makeRefTime(16, 20, 0));
+
+  // Manual 'manual_only' keeps exact 08:00 without rolling even at 11:00
+  const pinnedOnly = resetFieldBossesForMaintenance(
+    getActiveServerData(createDefaultState(mon)).bosses,
+    wed0800,
+    'manual_only',
+    wed1100
+  );
+  assert.equal(pinnedOnly.find((b) => b.name === '레마넌트').nextSpawnMs, wed0800);
+});
