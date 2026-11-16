@@ -23,44 +23,84 @@
 
     <div class="app-shell">
       <header class="topbar">
-        <div class="topbar-brand">
-          <img
-            src="./assets/eclipse-icon.png?v=2"
-            alt="이클립스: 더 어웨이크닝"
-            class="brand-icon"
-          />
-          <div>
-            <div class="title-row">
-              <h1>이클립스: 더 어웨이크닝 · 보스 타이머</h1>
-              <span id="active-server-pill" class="pill pill-blue">바르카디온 05</span>
-              <span id="sync-role-badge" class="pill pill-muted">동기화 확인 중</span>
+        <div class="topbar-left">
+          <div class="topbar-brand">
+            <img
+              src="./assets/eclipse-icon.png?v=2"
+              alt="이클립스: 더 어웨이크닝"
+              class="brand-icon"
+            />
+            <div>
+              <div class="title-row">
+                <h1>이클립스: 더 어웨이크닝</h1>
+                <span id="active-server-pill" class="pill pill-blue">바르카디온 05</span>
+                <span id="sync-role-badge" class="pill pill-muted">동기화 확인 중</span>
+              </div>
+              <div class="clock-row">
+                <span id="live-clock" class="live-clock">--:--:--</span>
+                <span id="clock-offset-badge" class="pill pill-muted hidden"></span>
+                <span id="maint-next-badge" class="pill pill-muted">수요일 08:00 정기점검 리셋</span>
+                <span id="sync-meta-badge" class="pill pill-muted hidden"></span>
+              </div>
             </div>
-            <div class="clock-row">
-              <span id="live-clock" class="live-clock">--:--:--</span>
-              <span id="clock-offset-badge" class="pill pill-muted hidden"></span>
-              <span id="maint-next-badge" class="pill pill-muted">수요일 08:00 정기점검 리셋</span>
-              <span id="sync-meta-badge" class="pill pill-muted hidden"></span>
-            </div>
+          </div>
+
+          <div class="topbar-actions">
+            <button id="btn-notify-perm" class="btn btn-secondary" type="button">
+              🔔 데스크톱 알림 허용하기
+            </button>
+            <button id="btn-copy-schedule" class="btn btn-secondary" type="button">
+              🖼️ 시간표 이미지 복사
+            </button>
+            <button id="btn-open-auth" class="btn btn-secondary" type="button" title="호스트 로그인 및 편집 권한 관리">
+              🔑 권한 관리
+            </button>
+            <button id="btn-open-maintenance" class="btn btn-warning" type="button" title="수요일 정기점검 리셋 및 시간 설정">
+              🔄 정기점검 리셋
+            </button>
+            <button id="btn-open-settings" class="btn btn-ghost" type="button" title="환경 설정 및 백업">
+              ⚙️ 설정
+            </button>
           </div>
         </div>
 
-        <div class="topbar-actions">
-          <button id="btn-notify-perm" class="btn btn-secondary" type="button">
-            🔔 데스크톱 알림 허용하기
-          </button>
-          <button id="btn-copy-schedule" class="btn btn-secondary" type="button">
-            🖼️ 시간표 이미지 복사
-          </button>
-          <button id="btn-open-auth" class="btn btn-secondary" type="button" title="호스트 로그인 및 편집 권한 관리">
-            🔑 권한 관리
-          </button>
-          <button id="btn-open-maintenance" class="btn btn-warning" type="button" title="수요일 정기점검 리셋 및 시간 설정">
-            🔄 정기점검 리셋
-          </button>
-          <button id="btn-open-settings" class="btn btn-ghost" type="button" title="환경 설정 및 백업">
-            ⚙️ 설정
-          </button>
-        </div>
+        <aside class="topbar-notice-box" aria-label="공지사항">
+          <div class="notice-header">
+            <span class="notice-title">📢 공지사항</span>
+            <div id="notice-editor-controls" class="notice-editor-controls">
+              <label class="notice-control-label" title="글씨 크기">
+                <span>크기</span>
+                <select id="sel-notice-font-size" class="compact-select notice-size-select">
+                  <option value="12">12px</option>
+                  <option value="13">13px</option>
+                  <option value="14" selected>14px</option>
+                  <option value="16">16px</option>
+                  <option value="18">18px</option>
+                  <option value="20">20px</option>
+                  <option value="24">24px</option>
+                </select>
+              </label>
+              <label class="notice-control-label" title="글자 색상 (기본 흰색)">
+                <span>색상</span>
+                <input id="inp-notice-color" type="color" value="#ffffff" class="notice-color-input" />
+              </label>
+              <button id="btn-save-notice" class="btn btn-xs btn-primary" type="button">저장</button>
+            </div>
+          </div>
+          <textarea
+            id="inp-notice-text"
+            class="notice-textarea"
+            maxlength="1000"
+            rows="3"
+            placeholder="공지사항이나 전달 메모를 입력하세요..."
+            style="font-size: 14px; color: #ffffff;"
+          ></textarea>
+          <div
+            id="notice-view-text"
+            class="notice-view-text is-empty"
+            style="font-size: 14px; color: #ffffff;"
+          >등록된 공지사항이 없습니다.</div>
+        </aside>
       </header>
 
       <nav id="server-tabs-bar" class="server-bar" aria-label="서버 탭 목록">
@@ -172,15 +212,23 @@
             <button type="button" class="world-pill active" data-boss-filter="all">전체</button>
             <button type="button" class="world-pill" data-boss-filter="world">월드 보스</button>
             <button type="button" class="world-pill" data-boss-filter="field">필드 보스</button>
+            <button type="button" class="world-pill" data-boss-filter="abyss">어비스 보스</button>
           </div>
           <span class="hint-text">
             출현 시간이 임박한 보스가 목록 상단으로 자동 정렬됩니다.
           </span>
         </div>
         <div class="toolbar-right">
+          <button
+            id="btn-restore-hidden-bosses"
+            class="btn btn-xs btn-secondary"
+            type="button"
+            title="숨긴 보스 카드를 다시 목록에 표시합니다"
+            disabled
+          >👁️ 숨긴 보스 복원 (0)</button>
           <label class="toggle-chip">
             <input id="chk-group-by-type" type="checkbox" />
-            <span>월드/필드 섹션 분리</span>
+            <span>구분별 섹션 분리</span>
           </label>
           <label class="sort-label">
             정렬:
@@ -226,11 +274,15 @@
             <div class="radio-row">
               <label class="radio-pill">
                 <input type="radio" name="bossTypeMode" value="field" checked />
-                <span>필드 보스 (처치 시간 · 리스폰 주기 / 10분 전부터 빨간 강조)</span>
+                <span>필드 보스 (처치 시간 · 리스폰 주기)</span>
+              </label>
+              <label class="radio-pill">
+                <input type="radio" name="bossTypeMode" value="abyss" />
+                <span>어비스 보스 (처치 시간 · 리스폰 주기)</span>
               </label>
               <label class="radio-pill">
                 <input type="radio" name="bossTypeMode" value="world" />
-                <span>월드 보스 (고정 출현 시간 · 1시간 출현 / 출현 시 빨간 강조)</span>
+                <span>월드 보스 (고정 출현 시간 · 유지 시간)</span>
               </label>
             </div>
           </div>
@@ -279,52 +331,97 @@
           </div>
 
           <div id="boss-field-fields" class="boss-field-fields">
-            <div class="form-grid-2">
-              <div class="field">
-                <span>보스 처치까지 걸리는 시간</span>
-                <div class="duration-inputs">
-                  <input id="boss-form-kill-min" type="number" min="0" max="999" placeholder="미정(0)" />
-                  <span>분</span>
-                  <input id="boss-form-kill-sec" type="number" min="0" max="59" placeholder="0" />
-                  <span>초</span>
-                </div>
-                <small class="field-hint">비워두면 0분으로 계산됩니다.</small>
+            <div id="boss-cycle-mode-box" class="field-box">
+              <div class="field-box-title">출현 일정 방식</div>
+              <div class="radio-row">
+                <label class="radio-pill">
+                  <input type="radio" name="fieldScheduleMode" value="cycle" checked />
+                  <span>처치 후 리스폰 주기</span>
+                </label>
+                <label class="radio-pill">
+                  <input type="radio" name="fieldScheduleMode" value="weekly" />
+                  <span>매주 요일 · 시각 고정</span>
+                </label>
               </div>
-              <div class="field">
-                <span>리스폰 주기 *</span>
+            </div>
+
+            <div id="boss-weekly-fields" class="field-box hidden">
+              <div class="field-box-title">매주 고정 출현 설정</div>
+              <div class="form-grid-2">
+                <label class="field">
+                  <span>매주 요일 *</span>
+                  <select id="boss-form-weekly-day">
+                    <option value="1">매주 월요일</option>
+                    <option value="2">매주 화요일</option>
+                    <option value="3">매주 수요일</option>
+                    <option value="4">매주 목요일</option>
+                    <option value="5" selected>매주 금요일</option>
+                    <option value="6">매주 토요일</option>
+                    <option value="0">매주 일요일</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>고정 출현 시각 (HH:MM) *</span>
+                  <input id="boss-form-weekly-time" type="text" value="21:00" placeholder="21:00" />
+                </label>
+              </div>
+              <div class="field" style="margin-top:4px;">
+                <span>출현 유지 시간 (분)</span>
                 <div class="duration-inputs">
-                  <input id="boss-form-respawn-hr" type="number" min="0" max="168" required />
-                  <span>시간</span>
-                  <input id="boss-form-respawn-min" type="number" min="0" max="59" required />
-                  <span>분</span>
+                  <input id="boss-form-weekly-active-min" type="number" min="1" max="720" value="60" />
+                  <span>분 동안 출현 유지 (기본 60분 = 1시간)</span>
                 </div>
               </div>
             </div>
 
-            <div class="field-box">
-              <div class="field-box-title">출현 시간 기준 입력</div>
-              <div class="radio-row">
-                <label class="radio-pill">
-                  <input type="radio" name="timeMode" value="manual" checked />
-                  <span>다음 출현 시간 직접 지정</span>
-                </label>
-                <label class="radio-pill">
-                  <input type="radio" name="timeMode" value="spawn" />
-                  <span>이전 출현 시간 기준 (출현+처치+리스폰)</span>
-                </label>
-                <label class="radio-pill">
-                  <input type="radio" name="timeMode" value="kill" />
-                  <span>이전 처치(컷) 시간 기준 (처치+리스폰)</span>
-                </label>
+            <div id="boss-cycle-fields" class="boss-field-fields">
+              <div class="form-grid-2">
+                <div class="field">
+                  <span>보스 처치까지 걸리는 시간</span>
+                  <div class="duration-inputs">
+                    <input id="boss-form-kill-min" type="number" min="0" max="999" placeholder="미정(0)" />
+                    <span>분</span>
+                    <input id="boss-form-kill-sec" type="number" min="0" max="59" placeholder="0" />
+                    <span>초</span>
+                  </div>
+                  <small class="field-hint">비워두면 0분으로 계산됩니다.</small>
+                </div>
+                <div class="field">
+                  <span>리스폰 주기 *</span>
+                  <div class="duration-inputs">
+                    <input id="boss-form-respawn-hr" type="number" min="0" max="168" required />
+                    <span>시간</span>
+                    <input id="boss-form-respawn-min" type="number" min="0" max="59" required />
+                    <span>분</span>
+                  </div>
+                </div>
               </div>
-              <div class="time-entry-row">
-                <select id="boss-form-day-offset" class="compact-select">
-                  <option value="-1">어제</option>
-                  <option value="0" selected>오늘</option>
-                  <option value="1">내일</option>
-                </select>
-                <input id="boss-form-time" type="text" placeholder="HH:MM 또는 HH:MM:SS (예: 16:31)" required />
-                <span id="boss-form-preview" class="preview-pill"></span>
+
+              <div class="field-box">
+                <div class="field-box-title">출현 시간 기준 입력</div>
+                <div class="radio-row">
+                  <label class="radio-pill">
+                    <input type="radio" name="timeMode" value="manual" checked />
+                    <span>다음 출현 시간 직접 지정</span>
+                  </label>
+                  <label class="radio-pill">
+                    <input type="radio" name="timeMode" value="spawn" />
+                    <span>이전 출현 시간 기준 (출현+처치+리스폰)</span>
+                  </label>
+                  <label class="radio-pill">
+                    <input type="radio" name="timeMode" value="kill" />
+                    <span>이전 처치(컷) 시간 기준 (처치+리스폰)</span>
+                  </label>
+                </div>
+                <div class="time-entry-row">
+                  <select id="boss-form-day-offset" class="compact-select">
+                    <option value="-1">어제</option>
+                    <option value="0" selected>오늘</option>
+                    <option value="1">내일</option>
+                  </select>
+                  <input id="boss-form-time" type="text" placeholder="HH:MM 또는 HH:MM:SS (예: 16:31)" required />
+                  <span id="boss-form-preview" class="preview-pill"></span>
+                </div>
               </div>
             </div>
           </div>
@@ -442,7 +539,7 @@
               <span id="settings-server-name" class="pill pill-blue">바르카디온 05</span>
             </div>
             <p class="field-hint" style="margin: 0;">
-              현재 선택된 서버에 새 월드 보스 또는 필드 보스를 등록합니다.
+              현재 선택된 서버에 새 월드 · 필드 · 어비스 보스를 등록합니다.
             </p>
             <div>
               <button id="btn-settings-add-boss" class="btn btn-primary btn-sm" type="button">
@@ -483,7 +580,7 @@
           <div class="field-box danger-zone">
             <div class="field-box-title">현재 서버 프리셋 복원</div>
             <p class="field-hint">
-              현재 선택된 서버의 보스 목록을 초기 프리셋(월드 보스 2종 · 필드 보스 5종)으로 되돌립니다. (편집 권한 필요)
+              현재 선택된 서버의 보스 목록을 초기 프리셋(월드 2종 · 필드 9종 · 어비스 3종)으로 되돌립니다. (편집 권한 필요)
             </p>
             <button id="btn-reset-defaults" class="btn btn-danger btn-sm" type="button">
               현재 서버 초기 프리셋으로 복원
@@ -550,7 +647,7 @@
             <label class="seed-select-label">
               <span>새 서버 추가 시:</span>
               <select id="sel-new-server-seed" class="compact-select">
-                <option value="preset">기본 프리셋(월드+필드) 복사</option>
+                <option value="preset">기본 프리셋(월드+필드+어비스) 복사</option>
                 <option value="empty">빈 목록으로 시작</option>
               </select>
             </label>
@@ -587,7 +684,7 @@
 
           <form id="form-maintenance-reset" class="field-box">
             <div class="field-box-header">
-              <span class="field-box-title">즉시 정기점검 리셋 (필드 보스 일괄 적용)</span>
+              <span class="field-box-title">즉시 정기점검 리셋 (필드 · 어비스 보스 일괄 적용)</span>
               <a
                 href="https://page.onstove.com/eclipse/kr/list/146438"
                 target="_blank"
@@ -596,7 +693,7 @@
               >🔗 스토브 점검 공지 확인 ↗</a>
             </div>
             <p class="field-hint" style="margin:0;">
-              월드 보스(크라카, 에버하르트)는 고정 시간을 유지하며, 필드 보스만 점검 종료 시각 기준으로 리셋됩니다.
+              월드 보스와 매주 고정 보스(사바토·말록·샤를레)는 고정 시간을 유지하며, 리스폰 주기형 필드 · 어비스 보스만 점검 종료 시각 기준으로 리셋됩니다.
             </p>
 
             <label class="field">
@@ -634,7 +731,7 @@
 
             <label class="inline-check">
               <input id="maint-apply-all-servers" type="checkbox" checked />
-              <span>등록된 모든 서버의 필드 보스에 일괄 적용</span>
+              <span>등록된 모든 서버의 필드 · 어비스 보스에 일괄 적용</span>
             </label>
 
             <div id="maint-preview" class="preview-box"></div>

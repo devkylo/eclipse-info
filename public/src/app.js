@@ -13,6 +13,11 @@ import {
   createDefaultState,
   createDefaultBosses,
   isWorldBoss,
+  isWeeklyFixedBoss,
+  getBossCategory,
+  getWeeklyBossWindow,
+  formatWeekdayKorean,
+  sanitizeNoticeObject,
   isBossRedAlert,
   normalizeBossLevel,
   normalizeFixedTimes,
@@ -144,6 +149,7 @@ function syncLocalPrefsFromAppState() {
     activeServerId: appState.activeServerId,
     serverTabs: appState.serverTabs,
     settings: personalSettings,
+    bossViewPrefs: appState.bossViewPrefs || localPrefs.bossViewPrefs || {},
     serverAlertLogs,
   });
   saveLocalPrefs(localPrefs);
@@ -153,14 +159,108 @@ function persistLocalOnly() {
   syncLocalPrefsFromAppState();
 }
 
+function isEditingNotice() {
+  const active = document.activeElement;
+  return Boolean(
+    active &&
+      ['inp-notice-text', 'sel-notice-font-size', 'inp-notice-color'].includes(active.id)
+  );
+}
+
 function isEditingModalOrInlineOpen() {
   const active = document.activeElement;
   if (active && active.hasAttribute && active.hasAttribute('data-inline-param')) {
     return true;
   }
+  if (isEditingNotice()) return true;
   return ['modal-boss', 'modal-quick-time', 'modal-maintenance'].some(
     (id) => !$(id).classList.contains('hidden')
   );
+}
+
+function getBossViewPref(bossId) {
+  const sid = appState.activeServerId || DEFAULT_SERVER_ID;
+  const pref = appState.bossViewPrefs?.[sid]?.[bossId];
+  return {
+    favorite: Boolean(pref?.favorite),
+    hidden: Boolean(pref?.hidden),
+  };
+}
+
+function setBossViewPref(bossId, patch) {
+  const sid = appState.activeServerId || DEFAULT_SERVER_ID;
+  if (!appState.bossViewPrefs || typeof appState.bossViewPrefs !== 'object') {
+    appState.bossViewPrefs = {};
+  }
+  const serverPrefs = { ...(appState.bossViewPrefs[sid] || {}) };
+  const next = {
+    favorite: Boolean(serverPrefs[bossId]?.favorite),
+    hidden: Boolean(serverPrefs[bossId]?.hidden),
+    ...patch,
+  };
+  if (next.favorite || next.hidden) {
+    serverPrefs[bossId] = next;
+  } else {
+    delete serverPrefs[bossId];
+  }
+  appState.bossViewPrefs = { ...appState.bossViewPrefs, [sid]: serverPrefs };
+  localPrefs.bossViewPrefs = appState.bossViewPrefs;
+  persistLocalOnly();
+}
+
+function getHiddenBossCount() {
+  return getActiveBosses().filter((b) => getBossViewPref(b.id).hidden).length;
+}
+
+function updateRestoreHiddenButton() {
+  const btn = $('btn-restore-hidden-bosses');
+  if (!btn) return;
+  const count = getHiddenBossCount();
+  btn.textContent = `👁️ 숨긴 보스 복원 (${count})`;
+  btn.disabled = count === 0;
+  btn.className = count > 0 ? 'btn btn-xs btn-warning' : 'btn btn-xs btn-secondary';
+}
+
+function applyNoticeStylesToInputs(fontSize, color) {
+  const textarea = $('inp-notice-text');
+  const viewEl = $('notice-view-text');
+  const cleanSize = `${Math.max(11, Math.min(28, Math.round(Number(fontSize) || 14)))}px`;
+  const cleanColor = /^#[0-9a-fA-F]{6}$/.test(String(color || '').trim())
+    ? String(color).trim().toLowerCase()
+    : '#ffffff';
+  if (textarea) {
+    textarea.style.fontSize = cleanSize;
+    textarea.style.color = cleanColor;
+  }
+  if (viewEl) {
+    viewEl.style.fontSize = cleanSize;
+    viewEl.style.color = cleanColor;
+  }
+}
+
+function renderNoticeBox(forceInputs = false) {
+  const notice = sanitizeNoticeObject(appState.notice);
+  const textarea = $('inp-notice-text');
+  const sizeSel = $('sel-notice-font-size');
+  const colorInp = $('inp-notice-color');
+  const viewEl = $('notice-view-text');
+
+  if (forceInputs || !isEditingNotice()) {
+    if (textarea) textarea.value = notice.text;
+    if (sizeSel) {
+      const targetVal = String(notice.fontSize);
+      const hasOption = [...sizeSel.options].some((o) => o.value === targetVal);
+      if (hasOption) sizeSel.value = targetVal;
+    }
+    if (colorInp) colorInp.value = notice.color;
+    applyNoticeStylesToInputs(notice.fontSize, notice.color);
+  }
+
+  if (viewEl) {
+    const trimmed = notice.text.trim();
+    viewEl.textContent = trimmed ? notice.text : '등록된 공지사항이 없습니다.';
+    viewEl.classList.toggle('is-empty', !trimmed);
+  }
 }
 
 async function persistSharedChange(options = {}) {
@@ -195,6 +295,7 @@ async function persistSharedChange(options = {}) {
     if (res.ok && res.sharedState) {
       sharedState = res.sharedState;
       appState = mergeSharedAndLocalState(sharedState, localPrefs, getNowMs());
+      renderNoticeBox();
       updateAuthAndSyncUI();
       return true;
     }
@@ -207,6 +308,7 @@ async function persistSharedChange(options = {}) {
       currentSpotlightKey = '';
       renderServerTabs();
       renderGlobalNotifyControls();
+      renderNoticeBox(true);
       renderBossList();
       updateAuthAndSyncUI();
       if (!options.silent) {
@@ -252,6 +354,7 @@ async function refreshFromServer(silent = false) {
   const prevRev = sharedState.revision;
   const prevUpdatedAtMs = sharedState.updatedAtMs;
   const prevServerOffsetSec = sharedState.serverOffsetSec;
+  const prevNoticeJson = JSON.stringify(sharedState.notice || null);
   const prevRole = authState.role;
   const prevConfigured = authState.configured;
 
@@ -291,7 +394,8 @@ async function refreshFromServer(silent = false) {
   const dataUpdated =
     nextShared.revision !== prevRev ||
     nextShared.updatedAtMs !== prevUpdatedAtMs ||
-    nextShared.serverOffsetSec !== prevServerOffsetSec;
+    nextShared.serverOffsetSec !== prevServerOffsetSec ||
+    JSON.stringify(nextShared.notice || null) !== prevNoticeJson;
   const changed = dataUpdated || authState.role !== prevRole || authState.configured !== prevConfigured;
   sharedState = nextShared;
 
@@ -303,6 +407,7 @@ async function refreshFromServer(silent = false) {
     currentSpotlightKey = '';
     renderServerTabs();
     renderGlobalNotifyControls();
+    renderNoticeBox();
     renderBossList();
     updateAuthAndSyncUI();
     updateTickDisplays(nowMs);
@@ -447,6 +552,17 @@ function showToast(title, body, urgent = false) {
   setTimeout(remove, 9000);
 }
 
+function getBossTypeMeta(boss) {
+  const cat = getBossCategory(boss);
+  if (cat === 'world') {
+    return { cat, shortLabel: '월드', fullLabel: '월드 보스', badgeClass: 'type-badge-world' };
+  }
+  if (cat === 'abyss') {
+    return { cat, shortLabel: '어비스', fullLabel: '어비스 보스', badgeClass: 'type-badge-abyss' };
+  }
+  return { cat: 'field', shortLabel: '필드', fullLabel: '필드 보스', badgeClass: 'type-badge-field' };
+}
+
 function getStatusBadgeInfo(status, world = false) {
   switch (status) {
     case 'world_active':
@@ -488,6 +604,20 @@ function computeProgressPercent(boss, nowMs) {
     const windowSpan = 12 * 3600 * 1000;
     const remaining = win.nextStartMs - nowMs;
     const ratio = 1 - Math.min(1, remaining / windowSpan);
+    return Math.max(0, Math.min(100, Math.round(ratio * 100)));
+  }
+
+  if (isWeeklyFixedBoss(boss)) {
+    const win = getWeeklyBossWindow(boss, nowMs);
+    if (win.isActiveNow && Number.isFinite(win.windowStartMs) && Number.isFinite(win.windowEndMs)) {
+      const total = win.windowEndMs - win.windowStartMs;
+      const elapsed = nowMs - win.windowStartMs;
+      return Math.max(0, Math.min(100, Math.round((elapsed / Math.max(1, total)) * 100)));
+    }
+    if (!Number.isFinite(win.nextStartMs)) return 0;
+    const weekSpan = 7 * 24 * 3600 * 1000;
+    const remaining = win.nextStartMs - nowMs;
+    const ratio = 1 - Math.min(1, remaining / weekSpan);
     return Math.max(0, Math.min(100, Math.round(ratio * 100)));
   }
 
@@ -600,11 +730,11 @@ function renderServerPickerModal() {
     <div class="featured-server-info">
       <div class="featured-server-title">
         <span>${escapeHtml(bark5Meta.name)}</span>
-        <span class="pill pill-green">월드 2종 · 필드 5종 기본 포함</span>
+        <span class="pill pill-green">월드 2 · 필드 9 · 어비스 3 기본 포함</span>
         ${bark5Tab?.favorite ? '<span class="pill pill-amber">★ 즐겨찾기</span>' : ''}
       </div>
       <div class="featured-server-sub">
-        월드 보스(크라카, 에버하르트) 및 필드 보스(레마넌트 외 4종)가 미리 등록되어 있습니다.
+        월드 보스(2종), 어비스 보스(3종), 필드 보스(벨카르·사바토·말록·샤를레 포함 9종)가 미리 등록되어 있습니다.
       </div>
     </div>
     <button
@@ -744,7 +874,7 @@ function renderGlobalNotifyControls() {
 }
 
 function findSpotlightBoss(nowMs) {
-  const bosses = getActiveBosses();
+  const bosses = getActiveBosses().filter((b) => !getBossViewPref(b.id).hidden);
   if (!bosses.length) return null;
   const sorted = sortBosses(bosses, 'soonest', nowMs);
   return sorted[0] || null;
@@ -753,6 +883,25 @@ function findSpotlightBoss(nowMs) {
 function getCountdownDisplayForBoss(boss, nowMs) {
   if (isWorldBoss(boss)) {
     const win = getWorldBossWindow(boss, nowMs);
+    if (win.isActiveNow && Number.isFinite(win.windowEndMs)) {
+      const remMs = win.windowEndMs - nowMs;
+      return {
+        countdown: formatCountdown(remMs),
+        sub: `출현 종료까지 ${formatCountdownText(remMs).replace(/ 후$/, ' 남음')}`,
+      };
+    }
+    if (Number.isFinite(win.nextStartMs)) {
+      const diffMs = win.nextStartMs - nowMs;
+      return {
+        countdown: formatCountdown(diffMs),
+        sub: formatCountdownText(diffMs),
+      };
+    }
+    return { countdown: '--:--', sub: '고정 시간 없음' };
+  }
+
+  if (isWeeklyFixedBoss(boss)) {
+    const win = getWeeklyBossWindow(boss, nowMs);
     if (win.isActiveNow && Number.isFinite(win.windowEndMs)) {
       const remMs = win.windowEndMs - nowMs;
       return {
@@ -782,7 +931,8 @@ function renderSpotlight(nowMs, force = false) {
   const activeMeta = getServerMeta(appState.activeServerId);
   const boss = findSpotlightBoss(nowMs);
   if (!boss) {
-    const emptyKey = `empty:${canEditShared() ? '1' : '0'}:${activeMeta.id}`;
+    const hiddenCount = getHiddenBossCount();
+    const emptyKey = `empty:${canEditShared() ? '1' : '0'}:${activeMeta.id}:${hiddenCount}`;
     if (!force && currentSpotlightKey === emptyKey) return;
     currentSpotlightKey = emptyKey;
     spotEl.className = 'spotlight-card';
@@ -790,11 +940,13 @@ function renderSpotlight(nowMs, force = false) {
     spotEl.innerHTML = `
       <div class="spotlight-left">
         <div class="spotlight-kicker">${escapeHtml(activeMeta.name)} · 다음 출현 예정 보스</div>
-        <div class="spotlight-name">등록된 보스가 없습니다</div>
+        <div class="spotlight-name">${hiddenCount > 0 ? '표시 중인 보스가 없습니다' : '등록된 보스가 없습니다'}</div>
         <div class="spotlight-sub">${
-          canEditShared()
-            ? `우측 상단의 '⚙️ 설정 → + 보스 추가하기'로 ${escapeHtml(activeMeta.name)} 서버 보스를 등록하세요.`
-            : `${escapeHtml(activeMeta.name)} 서버에 등록된 보스 시간표가 없습니다.`
+          hiddenCount > 0
+            ? `현재 ${hiddenCount}종의 보스가 숨겨져 있습니다. 아래 '숨긴 보스 복원' 버튼으로 되돌릴 수 있습니다.`
+            : canEditShared()
+              ? `상단의 '⚙️ 설정 → + 보스 추가하기'로 ${escapeHtml(activeMeta.name)} 서버 보스를 등록하세요.`
+              : `${escapeHtml(activeMeta.name)} 서버에 등록된 보스 시간표가 없습니다.`
         }</div>
       </div>
     `;
@@ -802,12 +954,13 @@ function renderSpotlight(nowMs, force = false) {
   }
 
   const world = isWorldBoss(boss);
+  const weekly = isWeeklyFixedBoss(boss);
   const status = getBossStatus(boss, nowMs);
   const isRed = isBossRedAlert(boss, nowMs);
   const targetMs = getBossDisplaySpawnMs(boss, nowMs);
   const editable = canEditShared();
   const disAttr = editable ? '' : 'disabled';
-  const key = `${editable ? '1' : '0'}:${activeMeta.id}:${boss.id}:${boss.bossType}:${boss.level || ''}:${targetMs}:${status}:${boss.killDurationSec}:${boss.respawnDurationSec}`;
+  const key = `${editable ? '1' : '0'}:${activeMeta.id}:${boss.id}:${boss.bossType}:${boss.weeklyDay ?? ''}:${boss.weeklyTime ?? ''}:${boss.activeDurationSec}:${boss.level || ''}:${targetMs}:${status}:${boss.killDurationSec}:${boss.respawnDurationSec}`;
 
   const cdDisplay = getCountdownDisplayForBoss(boss, nowMs);
   if (!force && key === currentSpotlightKey) {
@@ -822,10 +975,9 @@ function renderSpotlight(nowMs, force = false) {
   spotEl.className = `spotlight-card ${isRed ? 'is-red-alert' : ''}`;
   spotEl.style.setProperty('--spot-accent', isRed ? '#ef4444' : boss.color || '#3b82f6');
 
-  const badge = getStatusBadgeInfo(status, world);
-  const typeTag = world
-    ? `<span class="pill type-badge-world">월드 보스</span>`
-    : `<span class="pill type-badge-field">필드 보스</span>`;
+  const badge = getStatusBadgeInfo(status, world || weekly);
+  const typeMeta = getBossTypeMeta(boss);
+  const typeTag = `<span class="pill ${typeMeta.badgeClass}">${typeMeta.fullLabel}</span>`;
 
   let subHtml = '';
   let actionsHtml = '';
@@ -845,6 +997,21 @@ function renderSpotlight(nowMs, force = false) {
     actionsHtml = `
       <button class="btn btn-secondary btn-sm" type="button" data-action="edit-boss" data-shared-edit data-boss-id="${escapeHtml(boss.id)}" ${disAttr}>
         시간 설정
+      </button>
+    `;
+  } else if (weekly) {
+    const win = getWeeklyBossWindow(boss, nowMs);
+    const weeklyLabel = `매주 ${formatWeekdayKorean(boss.weeklyDay)} ${boss.weeklyTime}`;
+    const durStr = formatDurationKorean(getEffectiveActiveSec(boss));
+    if (win.isActiveNow) {
+      subHtml = `현재 출현 중: <strong>${formatTimeHHMM(win.windowStartMs)} ~ ${formatTimeHHMM(win.windowEndMs)}</strong> (${escapeHtml(durStr)}) · ${escapeHtml(weeklyLabel)} 고정`;
+    } else if (Number.isFinite(win.nextStartMs)) {
+      const dayLbl = formatRelativeDayLabel(win.nextStartMs, nowMs);
+      subHtml = `고정 출현: <strong>${escapeHtml(dayLbl)} ${formatTimeHHMM(win.nextStartMs)}</strong> (${escapeHtml(weeklyLabel)} · 유지 ${escapeHtml(durStr)})`;
+    }
+    actionsHtml = `
+      <button class="btn btn-secondary btn-sm" type="button" data-action="edit-boss" data-shared-edit data-boss-id="${escapeHtml(boss.id)}" ${disAttr}>
+        설정 수정
       </button>
     `;
   } else {
@@ -891,6 +1058,60 @@ function renderSpotlight(nowMs, force = false) {
   `;
 }
 
+const HIDE_EYE_ICON_SVG =
+  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+
+function buildCardTopActionsHtml(boss, badge, editable, editTitle) {
+  const pref = getBossViewPref(boss.id);
+  return `
+    <div class="card-top-actions">
+      <span class="pill ${badge.cls}" data-status-badge>${escapeHtml(badge.text)}</span>
+      <button
+        type="button"
+        class="icon-btn ${pref.favorite ? 'is-fav' : ''}"
+        data-action="toggle-boss-fav"
+        data-boss-id="${escapeHtml(boss.id)}"
+        title="${pref.favorite ? '즐겨찾기 해제' : '즐겨찾기 (목록 상단에 따로 표시)'}"
+      >${pref.favorite ? '★' : '☆'}</button>
+      <button
+        type="button"
+        class="icon-btn ${boss.notifyEnabled ? '' : 'muted'}"
+        data-action="toggle-boss-notify"
+        data-boss-id="${escapeHtml(boss.id)}"
+        title="${boss.notifyEnabled ? '내 브라우저에서 이 보스 알림 끄기' : '내 브라우저에서 이 보스 알림 켜기'}"
+      >${boss.notifyEnabled ? '🔔' : '🔕'}</button>
+      <button
+        type="button"
+        class="icon-btn"
+        data-action="toggle-boss-hide"
+        data-boss-id="${escapeHtml(boss.id)}"
+        title="내 화면에서 이 보스 숨기기"
+        aria-label="보스 숨기기"
+      >${HIDE_EYE_ICON_SVG}</button>
+      ${
+        editable
+          ? `<button
+              type="button"
+              class="icon-btn"
+              data-action="edit-boss"
+              data-shared-edit
+              data-boss-id="${escapeHtml(boss.id)}"
+              title="${escapeHtml(editTitle)}"
+            >✏️</button>`
+          : ''
+      }
+    </div>
+  `;
+}
+
+function getBossNotifySummary(boss) {
+  const effectiveOffsets = getEffectiveNotifyOffsetsSec(boss, appState.settings);
+  if (!boss.notifyEnabled) return '알림 꺼짐';
+  return boss.useCustomNotify
+    ? `개별 알림 (${effectiveOffsets.map(formatOffsetLabel).join(', ') || '없음'})`
+    : `공통 알림 (${effectiveOffsets.length}개)`;
+}
+
 function buildWorldBossCardHtml(boss, nowMs) {
   const editable = canEditShared();
   const disAttr = editable ? '' : 'disabled';
@@ -899,6 +1120,7 @@ function buildWorldBossCardHtml(boss, nowMs) {
   const win = getWorldBossWindow(boss, nowMs);
   const progress = computeProgressPercent(boss, nowMs);
   const cd = getCountdownDisplayForBoss(boss, nowMs);
+  const isFav = getBossViewPref(boss.id).favorite;
 
   const fixedTimes = normalizeFixedTimes(boss.fixedTimes);
   const activeMin = Math.max(1, Math.round(getEffectiveActiveSec(boss) / 60));
@@ -917,13 +1139,7 @@ function buildWorldBossCardHtml(boss, nowMs) {
     mainTimeText = formatTimeHHMM(win.nextStartMs);
   }
 
-  const effectiveOffsets = getEffectiveNotifyOffsetsSec(boss, appState.settings);
-  const notifySummary = !boss.notifyEnabled
-    ? '알림 꺼짐'
-    : boss.useCustomNotify
-      ? `개별 알림 (${effectiveOffsets.map(formatOffsetLabel).join(', ') || '없음'})`
-      : `공통 알림 (${effectiveOffsets.length}개)`;
-
+  const notifySummary = getBossNotifySummary(boss);
   const fixedTimesText = fixedTimes.length ? fixedTimes.join(', ') : '미설정';
   const viewLeftHtml =
     win.isActiveNow && Number.isFinite(win.nextStartMs)
@@ -939,7 +1155,7 @@ function buildWorldBossCardHtml(boss, nowMs) {
       : `출현 정각부터 ${activeMin}분간 유지`;
 
   return `
-    <article class="boss-card status-${status}" data-boss-card="${escapeHtml(boss.id)}">
+    <article class="boss-card status-${status}${isFav ? ' is-favorited' : ''}" data-boss-card="${escapeHtml(boss.id)}">
       <div class="card-top">
         <div class="boss-title-wrap">
           <span class="boss-dot" style="background:${escapeHtml(boss.color || '#a855f7')}"></span>
@@ -952,28 +1168,7 @@ function buildWorldBossCardHtml(boss, nowMs) {
             ${boss.memo ? `<div class="boss-memo">${escapeHtml(boss.memo)}</div>` : ''}
           </div>
         </div>
-        <div class="card-top-actions">
-          <span class="pill ${badge.cls}" data-status-badge>${escapeHtml(badge.text)}</span>
-          <button
-            type="button"
-            class="icon-btn ${boss.notifyEnabled ? '' : 'muted'}"
-            data-action="toggle-boss-notify"
-            data-boss-id="${escapeHtml(boss.id)}"
-            title="${boss.notifyEnabled ? '내 브라우저에서 이 보스 알림 끄기' : '내 브라우저에서 이 보스 알림 켜기'}"
-          >${boss.notifyEnabled ? '🔔' : '🔕'}</button>
-          ${
-            editable
-              ? `<button
-                  type="button"
-                  class="icon-btn"
-                  data-action="edit-boss"
-                  data-shared-edit
-                  data-boss-id="${escapeHtml(boss.id)}"
-                  title="고정 시간 / 알림 수정"
-                >✏️</button>`
-              : ''
-          }
-        </div>
+        ${buildCardTopActionsHtml(boss, badge, editable, '고정 시간 / 알림 수정')}
       </div>
 
       <div class="card-time-row">
@@ -1042,7 +1237,134 @@ function buildWorldBossCardHtml(boss, nowMs) {
   `;
 }
 
+function buildWeeklyBossCardHtml(boss, nowMs) {
+  const typeMeta = getBossTypeMeta(boss);
+  const editable = canEditShared();
+  const disAttr = editable ? '' : 'disabled';
+  const status = getBossStatus(boss, nowMs);
+  const badge = getStatusBadgeInfo(status, true);
+  const win = getWeeklyBossWindow(boss, nowMs);
+  const progress = computeProgressPercent(boss, nowMs);
+  const cd = getCountdownDisplayForBoss(boss, nowMs);
+  const isFav = getBossViewPref(boss.id).favorite;
+
+  const activeMin = Math.max(1, Math.round(getEffectiveActiveSec(boss) / 60));
+  const weekdayFull = formatWeekdayKorean(boss.weeklyDay);
+  const weeklyScheduleText = `매주 ${weekdayFull} ${boss.weeklyTime}`;
+  const notifySummary = getBossNotifySummary(boss);
+
+  let mainDayLabel = `매주 ${weekdayFull}`;
+  let mainSubLabel = `${boss.weeklyTime} 고정`;
+  let mainTimeText = boss.weeklyTime;
+
+  if (win.isActiveNow && Number.isFinite(win.windowStartMs) && Number.isFinite(win.windowEndMs)) {
+    mainDayLabel = '출현 중';
+    mainSubLabel = `~${formatTimeHHMM(win.windowEndMs)} 종료`;
+    mainTimeText = formatTimeHHMM(win.windowStartMs);
+  } else if (Number.isFinite(win.nextStartMs)) {
+    mainDayLabel = `${formatRelativeDayLabel(win.nextStartMs, nowMs)} (${formatWeekdayKorean(boss.weeklyDay, true)})`;
+    mainSubLabel = `매주 ${weekdayFull} 고정`;
+    mainTimeText = formatTimeHHMM(win.nextStartMs);
+  }
+
+  const viewLeftHtml =
+    win.isActiveNow && Number.isFinite(win.nextStartMs)
+      ? `고정 <strong>${escapeHtml(weeklyScheduleText)}</strong> · 유지 <strong>${activeMin}분</strong>`
+      : `고정 출현 시각 <strong>${escapeHtml(weeklyScheduleText)}</strong>`;
+  const viewRightHtml =
+    win.isActiveNow && Number.isFinite(win.nextStartMs)
+      ? `이후 다음 출현: <strong>${escapeHtml(formatRelativeDayLabel(win.nextStartMs, nowMs))} ${formatTimeHHMM(win.nextStartMs)}</strong>`
+      : `유지 <strong>${activeMin}분</strong>`;
+  const metaHintHtml =
+    win.isActiveNow && Number.isFinite(win.nextStartMs)
+      ? `다음 고정 출현: <strong>${escapeHtml(formatRelativeDayLabel(win.nextStartMs, nowMs))} ${formatTimeHHMM(win.nextStartMs)}</strong>`
+      : `${escapeHtml(weeklyScheduleText)} · 정각 출현`;
+
+  return `
+    <article class="boss-card status-${status}${isFav ? ' is-favorited' : ''}" data-boss-card="${escapeHtml(boss.id)}">
+      <div class="card-top">
+        <div class="boss-title-wrap">
+          <span class="boss-dot" style="background:${escapeHtml(boss.color || '#3b82f6')}"></span>
+          <div>
+            <div class="title-row">
+              <span class="pill ${typeMeta.badgeClass}">${typeMeta.shortLabel}</span>
+              ${boss.level ? `<span class="boss-lv">Lv.${boss.level}</span>` : ''}
+              <h3 class="boss-name">${escapeHtml(boss.name)}</h3>
+            </div>
+            ${boss.memo ? `<div class="boss-memo">${escapeHtml(boss.memo)}</div>` : ''}
+          </div>
+        </div>
+        ${buildCardTopActionsHtml(boss, badge, editable, '고정 요일 / 알림 수정')}
+      </div>
+
+      <div class="card-time-row">
+        <button
+          type="button"
+          class="spawn-target-btn"
+          data-action="edit-boss"
+          data-shared-edit
+          data-boss-id="${escapeHtml(boss.id)}"
+          title="${editable ? '클릭하여 고정 요일/시각 편집' : ''}"
+          ${disAttr}
+        >
+          <div class="spawn-day">
+            <span data-spawn-day>${escapeHtml(mainDayLabel)}</span>
+            <span>·</span>
+            <span data-anchor-label>${escapeHtml(mainSubLabel)}</span>
+          </div>
+          <div class="spawn-hhmm" data-spawn-hhmm>${escapeHtml(mainTimeText)}</div>
+        </button>
+
+        <div class="countdown-box">
+          <div class="countdown-val" data-countdown>${cd.countdown}</div>
+          <div class="countdown-sub" data-countdown-text>${escapeHtml(cd.sub)}</div>
+        </div>
+      </div>
+
+      <div class="progress-track">
+        <div class="progress-fill" data-progress style="width: ${progress}%"></div>
+      </div>
+
+      ${
+        editable
+          ? `<div class="world-schedule-box world-schedule-inline">
+              <span class="world-inline-times">고정 출현 시각 <strong>${escapeHtml(weeklyScheduleText)}</strong></span>
+              <div class="param-inputs">
+                <span>유지</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="720"
+                  value="${activeMin}"
+                  data-inline-param="activeMin"
+                  data-shared-edit
+                  data-boss-id="${escapeHtml(boss.id)}"
+                  aria-label="${escapeHtml(boss.name)} 출현 유지 분"
+                />
+                <span>분</span>
+              </div>
+            </div>
+            <div class="card-meta-row">
+              <span class="hint-text">${metaHintHtml}</span>
+              <button
+                type="button"
+                class="link-btn"
+                data-action="edit-boss"
+                data-shared-edit
+                data-boss-id="${escapeHtml(boss.id)}"
+              >${escapeHtml(notifySummary)}</button>
+            </div>`
+          : `<div class="cycle-preview" data-cycle-preview>
+              <span>${viewLeftHtml}</span>
+              <span>${viewRightHtml}</span>
+            </div>`
+      }
+    </article>
+  `;
+}
+
 function buildFieldBossCardHtml(boss, nowMs) {
+  const typeMeta = getBossTypeMeta(boss);
   const editable = canEditShared();
   const disAttr = editable ? '' : 'disabled';
   const status = getBossStatus(boss, nowMs);
@@ -1050,6 +1372,7 @@ function buildFieldBossCardHtml(boss, nowMs) {
   const diffMs = boss.nextSpawnMs - nowMs;
   const dayLabel = formatRelativeDayLabel(boss.nextSpawnMs, nowMs);
   const progress = computeProgressPercent(boss, nowMs);
+  const isFav = getBossViewPref(boss.id).favorite;
 
   const isKillUnset = boss.killDurationSec === null || boss.killDurationSec === undefined;
   const killTotalSec = getEffectiveKillSec(boss);
@@ -1065,49 +1388,23 @@ function buildFieldBossCardHtml(boss, nowMs) {
   const afterDay = formatRelativeDayLabel(afterNextMs, nowMs);
   const respawnLabel = formatDurationKorean(respawnTotalSec);
 
-  const effectiveOffsets = getEffectiveNotifyOffsetsSec(boss, appState.settings);
-  const notifySummary = !boss.notifyEnabled
-    ? '알림 꺼짐'
-    : boss.useCustomNotify
-      ? `개별 알림 (${effectiveOffsets.map(formatOffsetLabel).join(', ') || '없음'})`
-      : `공통 알림 (${effectiveOffsets.length}개)`;
+  const notifySummary = getBossNotifySummary(boss);
 
   return `
-    <article class="boss-card status-${status}" data-boss-card="${escapeHtml(boss.id)}">
+    <article class="boss-card status-${status}${isFav ? ' is-favorited' : ''}" data-boss-card="${escapeHtml(boss.id)}">
       <div class="card-top">
         <div class="boss-title-wrap">
           <span class="boss-dot" style="background:${escapeHtml(boss.color || '#3b82f6')}"></span>
           <div>
             <div class="title-row">
-              <span class="pill type-badge-field">필드</span>
+              <span class="pill ${typeMeta.badgeClass}">${typeMeta.shortLabel}</span>
               ${boss.level ? `<span class="boss-lv">Lv.${boss.level}</span>` : ''}
               <h3 class="boss-name">${escapeHtml(boss.name)}</h3>
             </div>
             ${boss.memo ? `<div class="boss-memo">${escapeHtml(boss.memo)}</div>` : ''}
           </div>
         </div>
-        <div class="card-top-actions">
-          <span class="pill ${badge.cls}" data-status-badge>${escapeHtml(badge.text)}</span>
-          <button
-            type="button"
-            class="icon-btn ${boss.notifyEnabled ? '' : 'muted'}"
-            data-action="toggle-boss-notify"
-            data-boss-id="${escapeHtml(boss.id)}"
-            title="${boss.notifyEnabled ? '내 브라우저에서 이 보스 알림 끄기' : '내 브라우저에서 이 보스 알림 켜기'}"
-          >${boss.notifyEnabled ? '🔔' : '🔕'}</button>
-          ${
-            editable
-              ? `<button
-                  type="button"
-                  class="icon-btn"
-                  data-action="edit-boss"
-                  data-shared-edit
-                  data-boss-id="${escapeHtml(boss.id)}"
-                  title="상세 설정 / 알림 수정"
-                >✏️</button>`
-              : ''
-          }
-        </div>
+        ${buildCardTopActionsHtml(boss, badge, editable, '상세 설정 / 알림 수정')}
       </div>
 
       <div class="card-time-row">
@@ -1268,29 +1565,60 @@ function buildFieldBossCardHtml(boss, nowMs) {
 }
 
 function buildBossCardHtml(boss, nowMs) {
-  return isWorldBoss(boss) ? buildWorldBossCardHtml(boss, nowMs) : buildFieldBossCardHtml(boss, nowMs);
+  if (isWorldBoss(boss)) return buildWorldBossCardHtml(boss, nowMs);
+  if (isWeeklyFixedBoss(boss)) return buildWeeklyBossCardHtml(boss, nowMs);
+  return buildFieldBossCardHtml(boss, nowMs);
 }
 
 function getFilteredAndSortedBosses(nowMs) {
   const filter = appState.settings.bossFilter || 'all';
   const bosses = getActiveBosses().filter((b) => {
-    if (filter === 'world') return isWorldBoss(b);
-    if (filter === 'field') return !isWorldBoss(b);
-    return true;
+    if (getBossViewPref(b.id).hidden) return false;
+    if (filter === 'all') return true;
+    return getBossCategory(b) === filter;
   });
   return sortBosses(bosses, appState.settings.sortBy, nowMs);
 }
 
 function computeOrderSignature(sorted, nowMs) {
   return sorted
-    .map((b) => `${b.id}:${getBossStatus(b, nowMs)}:${getBossDisplaySpawnMs(b, nowMs)}`)
+    .map(
+      (b) =>
+        `${b.id}:${getBossViewPref(b.id).favorite ? 1 : 0}:${getBossStatus(b, nowMs)}:${getBossDisplaySpawnMs(b, nowMs)}`
+    )
     .join('|');
+}
+
+function restoreAllHiddenBosses() {
+  const sid = appState.activeServerId || DEFAULT_SERVER_ID;
+  const serverPrefs = { ...(appState.bossViewPrefs?.[sid] || {}) };
+  let restoredCount = 0;
+  for (const [bid, pref] of Object.entries(serverPrefs)) {
+    if (pref?.hidden) {
+      restoredCount += 1;
+      if (pref.favorite) {
+        serverPrefs[bid] = { favorite: true, hidden: false };
+      } else {
+        delete serverPrefs[bid];
+      }
+    }
+  }
+  appState.bossViewPrefs = { ...(appState.bossViewPrefs || {}), [sid]: serverPrefs };
+  localPrefs.bossViewPrefs = appState.bossViewPrefs;
+  persistLocalOnly();
+  currentSpotlightKey = '';
+  renderBossList();
+  if (restoredCount > 0) {
+    showToast('숨긴 보스 복원', `숨겨져 있던 보스 ${restoredCount}종을 다시 표시했습니다.`);
+  }
 }
 
 function renderBossList() {
   const nowMs = getNowMs();
   const listEl = $('boss-list');
   const sorted = getFilteredAndSortedBosses(nowMs);
+  const hiddenCount = getHiddenBossCount();
+  updateRestoreHiddenButton();
   currentRenderedOrderKey = computeOrderSignature(sorted, nowMs);
   $('boss-count-badge').textContent = String(sorted.length);
 
@@ -1299,10 +1627,25 @@ function renderBossList() {
     const editable = canEditShared();
     listEl.innerHTML = `
       <div class="panel" style="text-align: center; padding: 32px;">
-        <p style="margin:0 0 12px; color: var(--text-muted);">${escapeHtml(activeMeta.name)} 서버에 표시할 보스가 없습니다.</p>
-        ${editable ? `<button class="btn btn-primary" id="btn-empty-add" type="button">+ 보스 추가하기</button>` : ''}
+        <p style="margin:0 0 12px; color: var(--text-muted);">${
+          hiddenCount > 0
+            ? `${escapeHtml(activeMeta.name)} 서버의 보스 ${hiddenCount}종이 현재 숨겨져 있습니다.`
+            : `${escapeHtml(activeMeta.name)} 서버에 표시할 보스가 없습니다.`
+        }</p>
+        <div style="display:inline-flex; gap:8px; flex-wrap:wrap; justify-content:center;">
+          ${
+            hiddenCount > 0
+              ? `<button class="btn btn-warning" id="btn-empty-restore-hidden" type="button">👁️ 숨긴 보스 복원 (${hiddenCount})</button>`
+              : ''
+          }
+          ${editable ? `<button class="btn btn-primary" id="btn-empty-add" type="button">+ 보스 추가하기</button>` : ''}
+        </div>
       </div>
     `;
+    const emptyRestoreBtn = $('btn-empty-restore-hidden');
+    if (emptyRestoreBtn) {
+      emptyRestoreBtn.addEventListener('click', restoreAllHiddenBosses);
+    }
     const emptyBtn = $('btn-empty-add');
     if (emptyBtn) {
       emptyBtn.addEventListener('click', () => {
@@ -1318,11 +1661,30 @@ function renderBossList() {
     return;
   }
 
+  const favBosses = sorted.filter((b) => getBossViewPref(b.id).favorite);
+  const regularBosses = sorted.filter((b) => !getBossViewPref(b.id).favorite);
   const shouldGroup = Boolean(appState.settings.groupByType) && (appState.settings.bossFilter || 'all') === 'all';
+  const sections = [];
+
+  if (favBosses.length) {
+    sections.push(`
+      <section class="boss-section boss-section-fav">
+        <div class="boss-section-header">
+          <span class="pill pill-amber">★ 즐겨찾기</span>
+          <span>상단 고정 보스</span>
+          <span class="pill pill-muted">${favBosses.length}</span>
+        </div>
+        <div class="boss-grid">
+          ${favBosses.map((b) => buildBossCardHtml(b, nowMs)).join('')}
+        </div>
+      </section>
+    `);
+  }
+
   if (shouldGroup) {
-    const worldBosses = sorted.filter((b) => isWorldBoss(b));
-    const fieldBosses = sorted.filter((b) => !isWorldBoss(b));
-    const sections = [];
+    const worldBosses = regularBosses.filter((b) => getBossCategory(b) === 'world');
+    const abyssBosses = regularBosses.filter((b) => getBossCategory(b) === 'abyss');
+    const fieldBosses = regularBosses.filter((b) => getBossCategory(b) === 'field');
 
     if (worldBosses.length) {
       sections.push(`
@@ -1339,12 +1701,27 @@ function renderBossList() {
       `);
     }
 
+    if (abyssBosses.length) {
+      sections.push(`
+        <section class="boss-section">
+          <div class="boss-section-header">
+            <span class="pill type-badge-abyss">어비스 보스</span>
+            <span>처치 시간 반영 리스폰</span>
+            <span class="pill pill-muted">${abyssBosses.length}</span>
+          </div>
+          <div class="boss-grid">
+            ${abyssBosses.map((b) => buildBossCardHtml(b, nowMs)).join('')}
+          </div>
+        </section>
+      `);
+    }
+
     if (fieldBosses.length) {
       sections.push(`
         <section class="boss-section">
           <div class="boss-section-header">
             <span class="pill type-badge-field">필드 보스</span>
-            <span>처치 시간 반영 리스폰</span>
+            <span>처치 시간 반영 / 고정 요일 출현</span>
             <span class="pill pill-muted">${fieldBosses.length}</span>
           </div>
           <div class="boss-grid">
@@ -1353,18 +1730,33 @@ function renderBossList() {
         </section>
       `);
     }
-
-    listEl.innerHTML = sections.join('');
-  } else {
-    listEl.innerHTML = `<div class="boss-grid">${sorted.map((b) => buildBossCardHtml(b, nowMs)).join('')}</div>`;
+  } else if (regularBosses.length) {
+    if (favBosses.length) {
+      sections.push(`
+        <section class="boss-section">
+          <div class="boss-section-header">
+            <span class="pill pill-blue">전체 보스</span>
+            <span>일반 목록</span>
+            <span class="pill pill-muted">${regularBosses.length}</span>
+          </div>
+          <div class="boss-grid">
+            ${regularBosses.map((b) => buildBossCardHtml(b, nowMs)).join('')}
+          </div>
+        </section>
+      `);
+    } else {
+      sections.push(`<div class="boss-grid">${regularBosses.map((b) => buildBossCardHtml(b, nowMs)).join('')}</div>`);
+    }
   }
+
+  listEl.innerHTML = sections.join('');
 
   renderSpotlight(nowMs, true);
   renderServerTabs();
 }
 
 function updateCardComputedPreview(cardEl, boss, nowMs) {
-  if (isWorldBoss(boss)) return;
+  if (isWorldBoss(boss) || isWeeklyFixedBoss(boss)) return;
   const dayLabel = formatRelativeDayLabel(boss.nextSpawnMs, nowMs);
   const expectedKillMs = getExpectedKillMs(boss);
   const afterNextMs = getAfterNextSpawnMs(boss, nowMs);
@@ -1408,13 +1800,14 @@ function updateTickDisplays(nowMs) {
     const cardEl = document.querySelector(`[data-boss-card="${CSS.escape(boss.id)}"]`);
     if (!cardEl) continue;
 
-    const world = isWorldBoss(boss);
+    const fixedSchedule = isWorldBoss(boss) || isWeeklyFixedBoss(boss);
     const status = getBossStatus(boss, nowMs);
-    const badge = getStatusBadgeInfo(status, world);
+    const badge = getStatusBadgeInfo(status, fixedSchedule);
     const progress = computeProgressPercent(boss, nowMs);
     const cd = getCountdownDisplayForBoss(boss, nowMs);
+    const isFav = getBossViewPref(boss.id).favorite;
 
-    const wantedClass = `boss-card status-${status}`;
+    const wantedClass = `boss-card status-${status}${isFav ? ' is-favorited' : ''}`;
     if (cardEl.className !== wantedClass) {
       cardEl.className = wantedClass;
     }
@@ -1511,7 +1904,7 @@ function handleTick() {
     const maintStr = normalizeMaintenanceTimeStr(appState.settings.maintenanceEndTime);
     showToast(
       `수요일 정기점검 자동 리셋`,
-      `${maintStr} 서버 오픈 기준으로 모든 필드 보스 시간이 초기화되었습니다.`,
+      `${maintStr} 서버 오픈 기준으로 필드 · 어비스 보스 시간이 초기화되었습니다.`,
       true
     );
     renderGlobalNotifyControls();
@@ -1796,15 +2189,22 @@ function renderWorldFixedTimeChips() {
     .join('');
 }
 
-function syncBossModalTypeUI(bossType) {
+function syncBossModalTypeUI(bossType, scheduleMode = null) {
   const isWorld = bossType === 'world';
+  const activeScheduleMode =
+    scheduleMode || document.querySelector('input[name="fieldScheduleMode"]:checked')?.value || 'cycle';
+  const isWeekly = !isWorld && activeScheduleMode === 'weekly';
+
   $('boss-world-fields').classList.toggle('hidden', !isWorld);
   $('boss-field-fields').classList.toggle('hidden', isWorld);
-  $('boss-form-auto-rollover-wrap').classList.toggle('hidden', isWorld);
+  $('boss-weekly-fields').classList.toggle('hidden', isWorld || !isWeekly);
+  $('boss-cycle-fields').classList.toggle('hidden', isWorld || isWeekly);
+  $('boss-form-auto-rollover-wrap').classList.toggle('hidden', isWorld || isWeekly);
 
-  $('boss-form-time').required = !isWorld;
-  $('boss-form-respawn-hr').required = !isWorld;
-  $('boss-form-respawn-min').required = !isWorld;
+  $('boss-form-time').required = !isWorld && !isWeekly;
+  $('boss-form-respawn-hr').required = !isWorld && !isWeekly;
+  $('boss-form-respawn-min').required = !isWorld && !isWeekly;
+  $('boss-form-weekly-time').required = !isWorld && isWeekly;
 }
 
 function updateBossModalPreview() {
@@ -1851,15 +2251,20 @@ function openBossModal(bossId) {
   $('boss-form-color').value = boss ? boss.color : '#3b82f6';
   $('boss-form-memo').value = boss ? boss.memo || '' : '';
 
-  const bossType = boss ? (isWorldBoss(boss) ? 'world' : 'field') : 'field';
+  const bossType = boss ? getBossCategory(boss) : 'field';
+  const scheduleMode = boss && isWeeklyFixedBoss(boss) ? 'weekly' : 'cycle';
   document.querySelector(`input[name="bossTypeMode"][value="${bossType}"]`).checked = true;
-  syncBossModalTypeUI(bossType);
+  document.querySelector(`input[name="fieldScheduleMode"][value="${scheduleMode}"]`).checked = true;
+  syncBossModalTypeUI(bossType, scheduleMode);
 
   if (boss) {
     editingWorldFixedTimes = normalizeFixedTimes(
       isWorldBoss(boss) ? boss.fixedTimes : ['12:00', '20:00']
     );
     $('boss-form-active-min').value = String(Math.max(1, Math.round(getEffectiveActiveSec(boss) / 60)));
+    $('boss-form-weekly-day').value = String(isWeeklyFixedBoss(boss) ? boss.weeklyDay : 5);
+    $('boss-form-weekly-time').value = isWeeklyFixedBoss(boss) ? boss.weeklyTime : '21:00';
+    $('boss-form-weekly-active-min').value = String(Math.max(1, Math.round(getEffectiveActiveSec(boss) / 60)));
 
     $('boss-form-auto-rollover').checked = Boolean(boss.autoRollover);
     const isUnset = boss.killDurationSec === null || boss.killDurationSec === undefined;
@@ -1890,6 +2295,9 @@ function openBossModal(bossId) {
   } else {
     editingWorldFixedTimes = ['12:00', '20:00'];
     $('boss-form-active-min').value = '60';
+    $('boss-form-weekly-day').value = '5';
+    $('boss-form-weekly-time').value = '21:00';
+    $('boss-form-weekly-active-min').value = '60';
     $('boss-form-auto-rollover').checked = Boolean(appState.settings.autoRolloverDefault);
     $('boss-form-kill-min').value = '1';
     $('boss-form-kill-sec').value = '0';
@@ -1933,7 +2341,7 @@ function updateQuickTimePreview() {
 
 function openQuickTimeModal(bossId) {
   const boss = getActiveBosses().find((b) => b.id === bossId);
-  if (!boss || isWorldBoss(boss)) return;
+  if (!boss || isWorldBoss(boss) || isWeeklyFixedBoss(boss)) return;
 
   const nowMs = getNowMs();
   $('quick-boss-id').value = boss.id;
@@ -2051,9 +2459,9 @@ function updateMaintenancePreview() {
   }
 
   const mode = document.querySelector('input[name="maintResetMode"]:checked')?.value || 'at_open';
-  const fieldBosses = getActiveBosses().filter((b) => !isWorldBoss(b));
+  const fieldBosses = getActiveBosses().filter((b) => !isWorldBoss(b) && !isWeeklyFixedBoss(b));
   if (!fieldBosses.length) {
-    previewEl.textContent = '현재 서버에 등록된 필드 보스가 없습니다.';
+    previewEl.textContent = '현재 서버에 등록된 주기형 필드 · 어비스 보스가 없습니다.';
     return;
   }
 
@@ -2332,7 +2740,7 @@ function bindEvents() {
     if (saved) {
       showToast(
         '정기점검 리셋 완료',
-        `${formatRelativeDayLabel(baseMs, nowMs)} ${formatTimeHHMM(baseMs)} 기준으로 필드 보스를 리셋했습니다.`
+        `${formatRelativeDayLabel(baseMs, nowMs)} ${formatTimeHHMM(baseMs)} 기준으로 필드 · 어비스 보스를 리셋했습니다.`
       );
     }
   });
@@ -2417,7 +2825,52 @@ function bindEvents() {
     $('inp-global-offset-val').value = '';
   });
 
-  // Toolbar filter, group-by-type, sort (Personal view settings)
+  // Topbar notice controls (Host / Editor edit, Viewer read-only)
+  const saveNoticeFromInputs = async (showSavedToast = true) => {
+    if (!canEditShared()) {
+      requireEditPermissionToast();
+      renderNoticeBox(true);
+      return;
+    }
+    appState.notice = sanitizeNoticeObject({
+      text: $('inp-notice-text').value,
+      fontSize: $('sel-notice-font-size').value,
+      color: $('inp-notice-color').value,
+    });
+    renderNoticeBox(true);
+    const saved = await persistSharedChange({ preserveBossNotifyDefaults: true });
+    if (saved && showSavedToast) {
+      showToast('공지사항 저장 완료', '상단 공지사항이 모든 방문자에게 반영됩니다.');
+    }
+  };
+
+  $('sel-notice-font-size').addEventListener('change', () => {
+    applyNoticeStylesToInputs($('sel-notice-font-size').value, $('inp-notice-color').value);
+    if (canEditShared()) saveNoticeFromInputs(false);
+  });
+
+  $('inp-notice-color').addEventListener('input', () => {
+    applyNoticeStylesToInputs($('sel-notice-font-size').value, $('inp-notice-color').value);
+  });
+
+  $('inp-notice-color').addEventListener('change', () => {
+    if (canEditShared()) saveNoticeFromInputs(false);
+  });
+
+  $('btn-save-notice').addEventListener('click', () => {
+    saveNoticeFromInputs(true);
+  });
+
+  $('inp-notice-text').addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      saveNoticeFromInputs(true);
+    }
+  });
+
+  // Toolbar filter, group-by-type, sort, restore-hidden (Personal view settings — works in viewer too)
+  $('btn-restore-hidden-bosses').addEventListener('click', restoreAllHiddenBosses);
+
   $('boss-filter-pills').addEventListener('click', (e) => {
     const btn = e.target.closest('[data-boss-filter]');
     if (!btn) return;
@@ -2452,6 +2905,22 @@ function bindEvents() {
     const nowMs = getNowMs();
     const boss = bosses[idx];
     const nextBosses = [...bosses];
+
+    if (action === 'toggle-boss-fav') {
+      const nextFav = !getBossViewPref(bossId).favorite;
+      setBossViewPref(bossId, { favorite: nextFav });
+      currentSpotlightKey = '';
+      renderBossList();
+      return;
+    }
+
+    if (action === 'toggle-boss-hide') {
+      setBossViewPref(bossId, { hidden: true });
+      currentSpotlightKey = '';
+      renderBossList();
+      showToast(`${boss.name} 숨김`, "상단 '숨긴 보스 복원' 버튼으로 언제든 다시 볼 수 있습니다.");
+      return;
+    }
 
     if (action === 'toggle-boss-notify') {
       const nextEnabled = !boss.notifyEnabled;
@@ -2574,6 +3043,19 @@ function bindEvents() {
   document.querySelectorAll('input[name="bossTypeMode"]').forEach((r) => {
     r.addEventListener('change', (e) => {
       syncBossModalTypeUI(e.target.value);
+      if (!$('boss-form-id').value.trim()) {
+        const defaultColors = { world: '#a855f7', abyss: '#06b6d4', field: '#3b82f6' };
+        if (defaultColors[e.target.value]) {
+          $('boss-form-color').value = defaultColors[e.target.value];
+        }
+      }
+    });
+  });
+
+  document.querySelectorAll('input[name="fieldScheduleMode"]').forEach((r) => {
+    r.addEventListener('change', (e) => {
+      const bossType = document.querySelector('input[name="bossTypeMode"]:checked')?.value || 'field';
+      syncBossModalTypeUI(bossType, e.target.value);
     });
   });
 
@@ -2678,6 +3160,8 @@ function bindEvents() {
         color: $('boss-form-color').value || '#a855f7',
         memo: $('boss-form-memo').value.trim(),
         fixedTimes: normalizeFixedTimes(editingWorldFixedTimes),
+        weeklyDay: null,
+        weeklyTime: null,
         activeDurationSec: activeMin * 60,
         killDurationSec: null,
         respawnDurationSec: 8 * 3600,
@@ -2703,7 +3187,60 @@ function bindEvents() {
       return;
     }
 
-    // Field Boss save
+    const resolvedType = bossType === 'abyss' ? 'abyss' : 'field';
+    const fallbackColor = resolvedType === 'abyss' ? '#06b6d4' : '#3b82f6';
+    const scheduleMode =
+      document.querySelector('input[name="fieldScheduleMode"]:checked')?.value || 'cycle';
+
+    if (scheduleMode === 'weekly') {
+      const weeklyDay = Number($('boss-form-weekly-day').value);
+      const parsedWeekly = parseTimeString($('boss-form-weekly-time').value);
+      if (!Number.isInteger(weeklyDay) || weeklyDay < 0 || weeklyDay > 6 || !parsedWeekly) {
+        showToast('입력 오류', '고정 출현 시각을 HH:MM 형식(예: 21:00)으로 입력해 주세요.', true);
+        return;
+      }
+      const weeklyTime = `${pad2(parsedWeekly.hours)}:${pad2(parsedWeekly.minutes)}`;
+      const activeMin = Math.max(
+        1,
+        Math.min(720, Math.round(Number($('boss-form-weekly-active-min').value) || 60))
+      );
+      const weeklyBoss = {
+        ...(existingIdx !== -1 ? bosses[existingIdx] : {}),
+        id: id || `boss-${Date.now()}`,
+        bossType: resolvedType,
+        level,
+        name,
+        color: $('boss-form-color').value || fallbackColor,
+        memo: $('boss-form-memo').value.trim(),
+        fixedTimes: [],
+        weeklyDay,
+        weeklyTime,
+        activeDurationSec: activeMin * 60,
+        killDurationSec: null,
+        respawnDurationSec: 7 * 24 * 3600,
+        nextSpawnMs: 0,
+        anchorType: 'manual',
+        anchorTimeMs: null,
+        notifyEnabled: $('boss-form-notify-enabled').checked,
+        useCustomNotify,
+        customNotifyOffsetsSec: [...editingBossCustomOffsets],
+        autoRollover: false,
+        previousState: null,
+      };
+      if (existingIdx !== -1) bosses[existingIdx] = weeklyBoss;
+      else bosses.push(weeklyBoss);
+      if (localPrefs.bossNotifyOverrides?.[sid]?.[weeklyBoss.id]) {
+        delete localPrefs.bossNotifyOverrides[sid][weeklyBoss.id];
+      }
+
+      setActiveBosses(bosses);
+      closeModal('modal-boss');
+      renderBossList();
+      await persistSharedChange({ includeBossNotify: true });
+      return;
+    }
+
+    // Field / Abyss cycle Boss save
     const timeStr = $('boss-form-time').value;
     const parsedTime = parseTimeString(timeStr);
     if (!parsedTime) {
@@ -2728,12 +3265,14 @@ function bindEvents() {
 
     const baseBoss = {
       id: id || `boss-${Date.now()}`,
-      bossType: 'field',
+      bossType: resolvedType,
       level,
       name,
-      color: $('boss-form-color').value || '#3b82f6',
+      color: $('boss-form-color').value || fallbackColor,
       memo: $('boss-form-memo').value.trim(),
       fixedTimes: [],
+      weeklyDay: null,
+      weeklyTime: null,
       activeDurationSec: 3600,
       killDurationSec,
       respawnDurationSec,
@@ -3017,6 +3556,7 @@ function bindEvents() {
       });
       renderServerTabs();
       renderGlobalNotifyControls();
+      renderNoticeBox(true);
       renderBossList();
       renderAlertLogs();
       closeModal('modal-settings');
@@ -3048,6 +3588,7 @@ function bindEvents() {
     const saved = await persistSharedChange({ force: true, includeBossNotify: true });
     renderServerTabs();
     renderGlobalNotifyControls();
+    renderNoticeBox(true);
     renderBossList();
     closeModal('modal-settings');
     if (saved) {
@@ -3063,7 +3604,7 @@ function bindEvents() {
     const serverMeta = getServerMeta(appState.activeServerId);
     if (
       !window.confirm(
-        `'${serverMeta.name}' 서버의 보스 목록을 초기 프리셋(월드 2종 · 필드 5종)으로 복원할까요?`
+        `'${serverMeta.name}' 서버의 보스 목록을 초기 프리셋(월드 2종 · 필드 9종 · 어비스 3종)으로 복원할까요?`
       )
     ) {
       return;
@@ -3098,7 +3639,7 @@ async function applyInlineParamChange(inputEl, commit) {
   const boss = bosses[idx];
   const nowMs = getNowMs();
 
-  if (isWorldBoss(boss) && inputEl.dataset.inlineParam === 'activeMin') {
+  if ((isWorldBoss(boss) || isWeeklyFixedBoss(boss)) && inputEl.dataset.inlineParam === 'activeMin') {
     const activeMin = Math.max(1, Math.min(720, Math.floor(Number(inputEl.value) || 60)));
     bosses[idx] = { ...boss, activeDurationSec: activeMin * 60 };
     setActiveBosses(bosses);
@@ -3209,6 +3750,7 @@ async function init() {
 
   renderServerTabs();
   renderGlobalNotifyControls();
+  renderNoticeBox(true);
   renderBossList();
   renderAlertLogs();
   updateAuthAndSyncUI();

@@ -153,17 +153,122 @@ export const PRESET_FIELD_BOSS_SPECS = [
     color: '#10b981',
     memo: '',
   },
+  {
+    id: 'belkar',
+    bossType: 'field',
+    level: 80,
+    name: '벨카르',
+    killDurationSec: null,
+    respawnDurationSec: 15 * 3600,
+    anchorIso: '2026-11-17T02:14:00+09:00',
+    color: '#dc2626',
+    memo: '',
+  },
+  {
+    id: 'sabato',
+    bossType: 'field',
+    level: 85,
+    name: '사바토',
+    weeklyDay: 5,
+    weeklyTime: '21:00',
+    activeDurationSec: 3600,
+    color: '#ea580c',
+    memo: '',
+  },
+  {
+    id: 'mallok',
+    bossType: 'field',
+    level: 90,
+    name: '말록',
+    weeklyDay: 6,
+    weeklyTime: '21:00',
+    activeDurationSec: 3600,
+    color: '#9333ea',
+    memo: '',
+  },
+  {
+    id: 'charle',
+    bossType: 'field',
+    level: 99,
+    name: '샤를레',
+    weeklyDay: 0,
+    weeklyTime: '21:00',
+    activeDurationSec: 3600,
+    color: '#eab308',
+    memo: '',
+  },
+];
+
+const EXTRA_FIELD_PRESET_IDS = new Set(['belkar', 'sabato', 'mallok', 'charle']);
+
+export function createDefaultNotice() {
+  return {
+    text: '',
+    fontSize: 14,
+    color: '#ffffff',
+  };
+}
+
+export function sanitizeNoticeObject(rawNotice) {
+  const raw = rawNotice && typeof rawNotice === 'object' ? rawNotice : {};
+  const text = typeof raw.text === 'string' ? raw.text.slice(0, 1000) : '';
+  const parsedSize = Math.round(Number(raw.fontSize));
+  const fontSize = Number.isFinite(parsedSize) ? Math.max(11, Math.min(28, parsedSize)) : 14;
+  const rawColor = typeof raw.color === 'string' ? raw.color.trim() : '';
+  const color = /^#[0-9a-fA-F]{6}$/.test(rawColor) ? rawColor.toLowerCase() : '#ffffff';
+  return { text, fontSize, color };
+}
+
+export const PRESET_ABYSS_BOSS_SPECS = [
+  {
+    id: 'baritan',
+    bossType: 'abyss',
+    level: 50,
+    name: '바리탄',
+    killDurationSec: null,
+    respawnDurationSec: 4 * 3600,
+    anchorIso: '2026-11-17T01:34:00+09:00',
+    color: '#f97316',
+    memo: '어비스 1',
+  },
+  {
+    id: 'eldar',
+    bossType: 'abyss',
+    level: 65,
+    name: '엘다르',
+    killDurationSec: null,
+    respawnDurationSec: 8 * 3600,
+    anchorIso: '2026-11-16T23:48:00+09:00',
+    color: '#06b6d4',
+    memo: '어비스 2',
+  },
+  {
+    id: 'kastian',
+    bossType: 'abyss',
+    level: 80,
+    name: '카스티안',
+    killDurationSec: null,
+    respawnDurationSec: 12 * 3600,
+    anchorIso: '2026-11-17T07:22:00+09:00',
+    color: '#14b8a6',
+    memo: '어비스 3',
+  },
 ];
 
 // Kept for compatibility
 export const PRESET_BOSS_SPECS = PRESET_FIELD_BOSS_SPECS;
 
-const PRESET_LEVEL_BY_ID = new Map(
-  [...PRESET_WORLD_BOSS_SPECS, ...PRESET_FIELD_BOSS_SPECS].map((s) => [s.id, s.level])
-);
-const PRESET_LEVEL_BY_NAME = new Map(
-  [...PRESET_WORLD_BOSS_SPECS, ...PRESET_FIELD_BOSS_SPECS].map((s) => [s.name, s.level])
-);
+const ALL_PRESET_SPECS = [
+  ...PRESET_WORLD_BOSS_SPECS,
+  ...PRESET_FIELD_BOSS_SPECS,
+  ...PRESET_ABYSS_BOSS_SPECS,
+];
+
+const PRESET_LEVEL_BY_ID = new Map(ALL_PRESET_SPECS.map((s) => [s.id, s.level]));
+const PRESET_LEVEL_BY_NAME = new Map([
+  ...ALL_PRESET_SPECS.map((s) => [s.name, s.level]),
+  ['카스티아', 80],
+]);
 
 export function normalizeBossLevel(val) {
   if (val === null || val === undefined || val === '') return null;
@@ -185,7 +290,7 @@ export function createDefaultSettings() {
     maintenanceEndTime: '08:00',
     serverOffsetSec: 0,
     sortBy: 'soonest',
-    bossFilter: 'all', // 'all' | 'world' | 'field'
+    bossFilter: 'all', // 'all' | 'world' | 'field' | 'abyss'
     groupByType: false,
   };
 }
@@ -318,6 +423,8 @@ export function createDefaultWorldBosses() {
     level: spec.level,
     name: spec.name,
     fixedTimes: [...spec.fixedTimes],
+    weeklyDay: null,
+    weeklyTime: null,
     activeDurationSec: spec.activeDurationSec,
     killDurationSec: null,
     respawnDurationSec: 8 * 3600,
@@ -335,35 +442,85 @@ export function createDefaultWorldBosses() {
 }
 
 export function createDefaultFieldBosses(referenceMs = Date.now()) {
-  return PRESET_FIELD_BOSS_SPECS.map((spec) => ({
-    id: spec.id,
-    bossType: 'field',
-    level: spec.level,
-    name: spec.name,
-    fixedTimes: [],
-    activeDurationSec: 3600,
-    killDurationSec: spec.killDurationSec,
-    respawnDurationSec: spec.respawnDurationSec,
-    nextSpawnMs: buildTimestampOnDay(spec.hhmm, referenceMs, 0),
-    anchorType: 'manual',
-    anchorTimeMs: null,
-    notifyEnabled: true,
-    useCustomNotify: false,
-    customNotifyOffsetsSec: [...DEFAULT_NOTIFY_OFFSETS_SEC],
-    autoRollover: true,
-    memo: spec.memo,
-    color: spec.color,
-    previousState: null,
-  }));
+  return PRESET_FIELD_BOSS_SPECS.map((spec) => {
+    const isWeekly = Number.isInteger(spec.weeklyDay) && Boolean(spec.weeklyTime);
+    const baseMs = isWeekly
+      ? 0
+      : spec.anchorIso
+        ? Date.parse(spec.anchorIso)
+        : buildTimestampOnDay(spec.hhmm, referenceMs, 0);
+    const baseBoss = {
+      id: spec.id,
+      bossType: 'field',
+      level: spec.level,
+      name: spec.name,
+      fixedTimes: [],
+      weeklyDay: isWeekly ? spec.weeklyDay : null,
+      weeklyTime: isWeekly ? spec.weeklyTime : null,
+      activeDurationSec: spec.activeDurationSec || 3600,
+      killDurationSec: spec.killDurationSec ?? null,
+      respawnDurationSec: spec.respawnDurationSec || 8 * 3600,
+      nextSpawnMs: baseMs,
+      anchorType: 'manual',
+      anchorTimeMs: null,
+      notifyEnabled: true,
+      useCustomNotify: false,
+      customNotifyOffsetsSec: [...DEFAULT_NOTIFY_OFFSETS_SEC],
+      autoRollover: !isWeekly,
+      memo: spec.memo,
+      color: spec.color,
+      previousState: null,
+    };
+    if (!isWeekly && spec.anchorIso) {
+      const rolled = applyAutoRollover(baseBoss, referenceMs);
+      return { ...rolled, previousState: null };
+    }
+    return baseBoss;
+  });
+}
+
+export function createDefaultAbyssBosses(referenceMs = Date.now()) {
+  return PRESET_ABYSS_BOSS_SPECS.map((spec) => {
+    const baseMs = Date.parse(spec.anchorIso);
+    const baseBoss = {
+      id: spec.id,
+      bossType: 'abyss',
+      level: spec.level,
+      name: spec.name,
+      fixedTimes: [],
+      weeklyDay: null,
+      weeklyTime: null,
+      activeDurationSec: 3600,
+      killDurationSec: spec.killDurationSec,
+      respawnDurationSec: spec.respawnDurationSec,
+      nextSpawnMs: baseMs,
+      anchorType: 'manual',
+      anchorTimeMs: null,
+      notifyEnabled: true,
+      useCustomNotify: false,
+      customNotifyOffsetsSec: [...DEFAULT_NOTIFY_OFFSETS_SEC],
+      autoRollover: true,
+      memo: spec.memo,
+      color: spec.color,
+      previousState: null,
+    };
+    const rolled = applyAutoRollover(baseBoss, referenceMs);
+    return { ...rolled, previousState: null };
+  });
 }
 
 export function createDefaultBosses(referenceMs = Date.now()) {
-  return [...createDefaultWorldBosses(), ...createDefaultFieldBosses(referenceMs)];
+  return [
+    ...createDefaultWorldBosses(),
+    ...createDefaultAbyssBosses(referenceMs),
+    ...createDefaultFieldBosses(referenceMs),
+  ];
 }
 
 export function createDefaultState(referenceMs = Date.now()) {
   return {
-    version: 6,
+    version: 8,
+    notice: createDefaultNotice(),
     hasSelectedInitialServer: false,
     activeServerId: DEFAULT_SERVER_ID,
     serverTabs: [{ id: DEFAULT_SERVER_ID, favorite: true }],
@@ -477,10 +634,95 @@ export function isWorldBoss(boss) {
   return boss && boss.bossType === 'world';
 }
 
+export function isAbyssBoss(boss) {
+  return boss && boss.bossType === 'abyss';
+}
+
+export function getBossCategory(boss) {
+  if (isWorldBoss(boss)) return 'world';
+  if (isAbyssBoss(boss)) return 'abyss';
+  return 'field';
+}
+
+const WEEKDAY_KO_NAMES = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
+const WEEKDAY_KO_SHORT = ['일', '월', '화', '수', '목', '금', '토'];
+
+export function formatWeekdayKorean(dayIndex, short = false) {
+  const idx = Number(dayIndex);
+  if (!Number.isInteger(idx) || idx < 0 || idx > 6) return '';
+  return short ? WEEKDAY_KO_SHORT[idx] : WEEKDAY_KO_NAMES[idx];
+}
+
+export function isWeeklyFixedBoss(boss) {
+  return (
+    Boolean(boss) &&
+    boss.bossType !== 'world' &&
+    Number.isInteger(boss.weeklyDay) &&
+    boss.weeklyDay >= 0 &&
+    boss.weeklyDay <= 6 &&
+    Boolean(parseTimeString(String(boss.weeklyTime ?? '')))
+  );
+}
+
+export function isFixedScheduleBoss(boss) {
+  return isWorldBoss(boss) || isWeeklyFixedBoss(boss);
+}
+
 export function getEffectiveActiveSec(boss) {
   const val = Number(boss?.activeDurationSec);
   if (!Number.isFinite(val) || val <= 0) return 3600;
   return Math.max(60, Math.round(val));
+}
+
+export function getWeeklyBossWindow(boss, nowMs = Date.now()) {
+  if (!isWeeklyFixedBoss(boss)) {
+    return {
+      isActiveNow: false,
+      windowStartMs: null,
+      windowEndMs: null,
+      nextStartMs: null,
+      effectiveTargetMs: null,
+    };
+  }
+  const parsed = parseTimeString(String(boss.weeklyTime));
+  const kst = getKstDateParts(nowMs);
+  const diff = boss.weeklyDay - kst.day;
+  const activeMs = getEffectiveActiveSec(boss) * 1000;
+  const candidates = [-7, 0, 7, 14]
+    .map((shift) =>
+      buildKstTimestamp(kst.year, kst.month, kst.date + diff + shift, parsed.hours, parsed.minutes, 0)
+    )
+    .sort((a, b) => a - b);
+
+  let activeWindow = null;
+  let nextStartMs = null;
+
+  for (const startMs of candidates) {
+    const endMs = startMs + activeMs;
+    if (nowMs >= startMs && nowMs < endMs) {
+      activeWindow = { startMs, endMs };
+    } else if (startMs > nowMs && nextStartMs === null) {
+      nextStartMs = startMs;
+    }
+  }
+
+  if (activeWindow) {
+    return {
+      isActiveNow: true,
+      windowStartMs: activeWindow.startMs,
+      windowEndMs: activeWindow.endMs,
+      nextStartMs,
+      effectiveTargetMs: activeWindow.startMs,
+    };
+  }
+
+  return {
+    isActiveNow: false,
+    windowStartMs: null,
+    windowEndMs: null,
+    nextStartMs,
+    effectiveTargetMs: nextStartMs,
+  };
 }
 
 /**
@@ -546,6 +788,10 @@ export function getBossDisplaySpawnMs(boss, nowMs = Date.now()) {
     const win = getWorldBossWindow(boss, nowMs);
     return win.effectiveTargetMs ?? nowMs;
   }
+  if (isWeeklyFixedBoss(boss)) {
+    const win = getWeeklyBossWindow(boss, nowMs);
+    return win.effectiveTargetMs ?? nowMs;
+  }
   return boss.nextSpawnMs;
 }
 
@@ -574,7 +820,7 @@ export function calculateNextSpawnFromLastKill(lastKillMs, respawnDurationSec) {
 }
 
 export function recomputeBossTarget(boss) {
-  if (isWorldBoss(boss)) return { ...boss };
+  if (isFixedScheduleBoss(boss)) return { ...boss };
   const killSec = getEffectiveKillSec(boss);
   const respawnSec = getEffectiveRespawnSec(boss);
 
@@ -604,6 +850,10 @@ export function getAfterNextSpawnMs(boss, nowMs = Date.now()) {
     const win = getWorldBossWindow(boss, nowMs);
     return win.nextStartMs ?? nowMs;
   }
+  if (isWeeklyFixedBoss(boss)) {
+    const win = getWeeklyBossWindow(boss, nowMs);
+    return win.nextStartMs ?? nowMs;
+  }
   return calculateNextSpawnFromLastSpawn(
     boss.nextSpawnMs,
     getEffectiveKillSec(boss),
@@ -620,7 +870,7 @@ function makeUndoSnapshot(boss) {
 }
 
 export function advanceBossCycle(boss, mode, nowMs = Date.now()) {
-  if (isWorldBoss(boss)) return boss;
+  if (isFixedScheduleBoss(boss)) return boss;
   const previousState = makeUndoSnapshot(boss);
 
   if (mode === 'killed_now') {
@@ -643,7 +893,7 @@ export function advanceBossCycle(boss, mode, nowMs = Date.now()) {
 }
 
 export function setBossTimeByMode(boss, mode, timeMs) {
-  if (isWorldBoss(boss) || !Number.isFinite(timeMs)) return boss;
+  if (isFixedScheduleBoss(boss) || !Number.isFinite(timeMs)) return boss;
   const previousState = makeUndoSnapshot(boss);
 
   if (mode === 'spawn') {
@@ -690,7 +940,7 @@ export function undoBossTimeChange(boss, nowMs = Date.now()) {
 }
 
 export function applyAutoRollover(boss, nowMs = Date.now()) {
-  if (isWorldBoss(boss) || !boss.autoRollover) return boss;
+  if (isFixedScheduleBoss(boss) || !boss.autoRollover) return boss;
   const killSec = getEffectiveKillSec(boss);
   const respawnSec = getEffectiveRespawnSec(boss);
   const cycleMs = (killSec + respawnSec) * 1000;
@@ -713,8 +963,8 @@ export function applyAutoRollover(boss, nowMs = Date.now()) {
 }
 
 /**
- * Reset Field Bosses for server maintenance end timestamp.
- * World Bosses keep their fixed schedules untouched.
+ * Reset cycle-based Field/Abyss Bosses for server maintenance end timestamp.
+ * World Bosses and weekly fixed Field Bosses keep their fixed schedules untouched.
  * mode:
  * - 'at_open': first spawn = maintenanceEndMs (08:00), rolling forward with autoRollover if past grace
  * - 'after_cycle': next spawn = maintenanceEndMs + killDuration + respawnDuration
@@ -729,7 +979,7 @@ export function resetFieldBossesForMaintenance(
   if (!Array.isArray(bosses) || !Number.isFinite(maintenanceEndMs)) return bosses;
 
   return bosses.map((boss) => {
-    if (isWorldBoss(boss)) return boss;
+    if (isFixedScheduleBoss(boss)) return boss;
     const preResetSnapshot = makeUndoSnapshot(boss);
 
     if (mode === 'after_cycle') {
@@ -910,6 +1160,14 @@ export function findDueAlerts(
       if (Number.isFinite(win.nextStartMs)) {
         targets.push(win.nextStartMs);
       }
+    } else if (isWeeklyFixedBoss(boss)) {
+      const win = getWeeklyBossWindow(boss, nowMs);
+      if (win.isActiveNow && Number.isFinite(win.windowStartMs)) {
+        targets.push(win.windowStartMs);
+      }
+      if (Number.isFinite(win.nextStartMs)) {
+        targets.push(win.nextStartMs);
+      }
     } else {
       targets.push(boss.nextSpawnMs);
     }
@@ -972,6 +1230,16 @@ export function getBossStatus(boss, nowMs = Date.now()) {
     return 'scheduled';
   }
 
+  if (isWeeklyFixedBoss(boss)) {
+    const win = getWeeklyBossWindow(boss, nowMs);
+    if (win.isActiveNow) return 'spawning_now';
+    if (!Number.isFinite(win.nextStartMs)) return 'unscheduled';
+    const diffMs = win.nextStartMs - nowMs;
+    if (diffMs <= FIELD_BOSS_RED_WINDOW_MS) return 'imminent';
+    if (diffMs <= 30 * 60 * 1000) return 'upcoming';
+    return 'scheduled';
+  }
+
   const diffMs = boss.nextSpawnMs - nowMs;
   const activeWindowMs = Math.max(getEffectiveKillSec(boss), 60) * 1000;
 
@@ -1019,8 +1287,16 @@ export function sortBosses(bosses, sortBy = 'soonest', nowMs = Date.now()) {
     if (rA !== rB) return rA - rB;
 
     if (rA === 0) {
-      const endA = isWorldBoss(a) ? getWorldBossWindow(a, nowMs).windowEndMs : getExpectedKillMs(a);
-      const endB = isWorldBoss(b) ? getWorldBossWindow(b, nowMs).windowEndMs : getExpectedKillMs(b);
+      const endA = isWorldBoss(a)
+        ? getWorldBossWindow(a, nowMs).windowEndMs
+        : isWeeklyFixedBoss(a)
+          ? getWeeklyBossWindow(a, nowMs).windowEndMs
+          : getExpectedKillMs(a);
+      const endB = isWorldBoss(b)
+        ? getWorldBossWindow(b, nowMs).windowEndMs
+        : isWeeklyFixedBoss(b)
+          ? getWeeklyBossWindow(b, nowMs).windowEndMs
+          : getExpectedKillMs(b);
       if (endA !== endB) return (endA ?? 0) - (endB ?? 0);
       return a.name.localeCompare(b.name, 'ko');
     }
@@ -1094,11 +1370,17 @@ export function formatCountdownText(diffMs) {
   if (absSec < 60) {
     return diffMs >= 0 ? `${absSec}초 후` : `${absSec}초 지남`;
   }
-  const h = Math.floor(absSec / 3600);
+  const d = Math.floor(absSec / 86400);
+  const h = Math.floor((absSec % 86400) / 3600);
   const m = Math.floor((absSec % 3600) / 60);
   const parts = [];
-  if (h > 0) parts.push(`${h}시간`);
-  if (m > 0) parts.push(`${m}분`);
+  if (d > 0) {
+    parts.push(`${d}일`);
+    if (h > 0) parts.push(`${h}시간`);
+  } else {
+    if (h > 0) parts.push(`${h}시간`);
+    if (m > 0) parts.push(`${m}분`);
+  }
   const body = parts.join(' ') || '0분';
   return diffMs >= 0 ? `${body} 후` : `${body} 지남`;
 }
@@ -1138,6 +1420,21 @@ export function formatScheduleForShare(bosses, nowMs = Date.now(), serverName = 
       return `• [월드] ${lvPrefix}${boss.name} → 시간 미설정`;
     }
 
+    const typeTag = isAbyssBoss(boss) ? '어비스' : '필드';
+    if (isWeeklyFixedBoss(boss)) {
+      const win = getWeeklyBossWindow(boss, nowMs);
+      const weeklyStr = `매주 ${formatWeekdayKorean(boss.weeklyDay)} ${boss.weeklyTime} 고정`;
+      if (win.isActiveNow) {
+        const remText = formatCountdownText(win.windowEndMs - nowMs).replace(/ 후$/, ' 남음');
+        return `• [${typeTag}] ${lvPrefix}${boss.name} → 출현 중! (~${formatTimeHHMM(win.windowEndMs)}, ${remText}) [${weeklyStr}]`;
+      }
+      const targetMs = win.nextStartMs ?? nowMs;
+      const dayLabel = formatRelativeDayLabel(targetMs, nowMs);
+      const dayPrefix = dayLabel === '오늘' ? '' : `${dayLabel} `;
+      const diffText = formatCountdownText(targetMs - nowMs);
+      return `• [${typeTag}] ${lvPrefix}${boss.name} → ${dayPrefix}${formatTimeHHMM(targetMs)} (${diffText}) [${weeklyStr}]`;
+    }
+
     const dayLabel = formatRelativeDayLabel(boss.nextSpawnMs, nowMs);
     const timeStr = formatTimeHHMM(boss.nextSpawnMs);
     const dayPrefix = dayLabel === '오늘' ? '' : `${dayLabel} `;
@@ -1147,30 +1444,45 @@ export function formatScheduleForShare(bosses, nowMs = Date.now(), serverName = 
         ? '미설정(0분)'
         : formatDurationKorean(getEffectiveKillSec(boss));
     const respawnText = formatDurationKorean(getEffectiveRespawnSec(boss));
-    return `• [필드] ${lvPrefix}${boss.name} → ${dayPrefix}${timeStr} (${diffText}) [처치 ${killText} / 리스폰 ${respawnText}]`;
+    return `• [${typeTag}] ${lvPrefix}${boss.name} → ${dayPrefix}${timeStr} (${diffText}) [처치 ${killText} / 리스폰 ${respawnText}]`;
   });
 
   return [header, ...lines].join('\n');
 }
 
-function sanitizeBossArray(rawBosses, fallbackBosses, fallbackNowMs, isLegacyV1, shouldInjectWorldPresets) {
+function sanitizeBossArray(
+  rawBosses,
+  fallbackBosses,
+  fallbackNowMs,
+  isLegacyV1,
+  shouldInjectWorldPresets,
+  shouldInjectAbyssPresets = false,
+  shouldInjectExtraFieldPresets = false
+) {
   const source = Array.isArray(rawBosses) ? rawBosses : fallbackBosses;
   const cleaned = source
     .filter((b) => b && typeof b === 'object' && typeof b.name === 'string' && b.name.trim().length > 0)
     .map((b, idx) => {
       const id = typeof b.id === 'string' && b.id.trim() ? b.id : `boss-${idx}-${Date.now()}`;
       const name = b.name.trim();
-      const bossType =
-        b.bossType === 'world' || b.bossType === 'field'
-          ? b.bossType
-          : Array.isArray(b.fixedTimes) && b.fixedTimes.length > 0
-            ? 'world'
-            : 'field';
+      const bossType = ['world', 'field', 'abyss'].includes(b.bossType)
+        ? b.bossType
+        : Array.isArray(b.fixedTimes) && b.fixedTimes.length > 0
+          ? 'world'
+          : 'field';
       const level =
         b.level === undefined
           ? (PRESET_LEVEL_BY_ID.get(id) ?? PRESET_LEVEL_BY_NAME.get(name) ?? null)
           : normalizeBossLevel(b.level);
       const fixedTimes = bossType === 'world' ? normalizeFixedTimes(b.fixedTimes) : [];
+      const rawDay = b.weeklyDay === null || b.weeklyDay === undefined || b.weeklyDay === '' ? null : Number(b.weeklyDay);
+      const parsedWeeklyTime = bossType !== 'world' ? parseTimeString(String(b.weeklyTime ?? '')) : null;
+      const weeklyDay =
+        bossType !== 'world' && Number.isInteger(rawDay) && rawDay >= 0 && rawDay <= 6 && parsedWeeklyTime
+          ? rawDay
+          : null;
+      const weeklyTime =
+        weeklyDay !== null ? `${pad2(parsedWeeklyTime.hours)}:${pad2(parsedWeeklyTime.minutes)}` : null;
       const activeDurationSec = Math.max(60, Math.round(Number(b.activeDurationSec) || 3600));
 
       const killDurationSec =
@@ -1189,6 +1501,8 @@ function sanitizeBossArray(rawBosses, fallbackBosses, fallbackNowMs, isLegacyV1,
         level,
         name,
         fixedTimes,
+        weeklyDay,
+        weeklyTime,
         activeDurationSec,
         killDurationSec,
         respawnDurationSec,
@@ -1207,7 +1521,7 @@ function sanitizeBossArray(rawBosses, fallbackBosses, fallbackNowMs, isLegacyV1,
             ).sort((a, b) => b - a)
           : [...DEFAULT_NOTIFY_OFFSETS_SEC],
         autoRollover:
-          bossType === 'world'
+          bossType === 'world' || weeklyDay !== null
             ? false
             : isLegacyV1
               ? true
@@ -1220,16 +1534,36 @@ function sanitizeBossArray(rawBosses, fallbackBosses, fallbackNowMs, isLegacyV1,
       };
     });
 
+  let result = cleaned;
   if (shouldInjectWorldPresets) {
-    const existingIds = new Set(cleaned.map((b) => b.id));
-    const existingNames = new Set(cleaned.map((b) => b.name));
+    const existingIds = new Set(result.map((b) => b.id));
+    const existingNames = new Set(result.map((b) => b.name));
     const toPrepend = createDefaultWorldBosses().filter(
       (wb) => !existingIds.has(wb.id) && !existingNames.has(wb.name)
     );
-    return [...toPrepend, ...cleaned];
+    result = [...toPrepend, ...result];
+  }
+  if (shouldInjectAbyssPresets) {
+    const existingIds = new Set(result.map((b) => b.id));
+    const existingNames = new Set(result.map((b) => b.name));
+    const toAdd = createDefaultAbyssBosses(fallbackNowMs).filter(
+      (ab) =>
+        !existingIds.has(ab.id) &&
+        !existingNames.has(ab.name) &&
+        !(ab.id === 'kastian' && existingNames.has('카스티아'))
+    );
+    result = [...result, ...toAdd];
+  }
+  if (shouldInjectExtraFieldPresets) {
+    const existingIds = new Set(result.map((b) => b.id));
+    const existingNames = new Set(result.map((b) => b.name));
+    const extraFields = createDefaultFieldBosses(fallbackNowMs).filter(
+      (fb) => EXTRA_FIELD_PRESET_IDS.has(fb.id) && !existingIds.has(fb.id) && !existingNames.has(fb.name)
+    );
+    result = [...result, ...extraFields];
   }
 
-  return cleaned;
+  return result;
 }
 
 function normalizeOffsetList(rawList, fallback = DEFAULT_NOTIFY_OFFSETS_SEC) {
@@ -1251,7 +1585,7 @@ function sanitizeSettingsObject(rawSettings, fallbackSettings = createDefaultSet
   if (isLegacyV1) {
     settings.autoRolloverDefault = true;
   }
-  if (!['all', 'world', 'field'].includes(settings.bossFilter)) {
+  if (!['all', 'world', 'field', 'abyss'].includes(settings.bossFilter)) {
     settings.bossFilter = 'all';
   }
   if (!['soonest', 'name', 'custom'].includes(settings.sortBy)) {
@@ -1298,25 +1632,31 @@ export function sanitizeState(raw, fallbackNowMs = Date.now()) {
   const isLegacyV1 = !raw.version || versionNum < 2;
   const isPreMultiServer = versionNum < 3;
   const isPreWorldBoss = versionNum < 4;
+  const isPreAbyssBoss = versionNum < 7;
+  const isPreExtraFieldBoss = versionNum < 8;
 
   const settings = sanitizeSettingsObject(raw.settings, defaults.settings, isLegacyV1);
+  const notice = sanitizeNoticeObject(raw.notice);
 
   const lastMaintenanceResetMs = Number.isFinite(Number(raw.lastMaintenanceResetMs))
     ? Number(raw.lastMaintenanceResetMs)
     : getMostRecentWednesdayResetMs(fallbackNowMs, settings.maintenanceEndTime);
 
-  // Migrate v1/v2 single-server payload into v6 servers['barkadion-05']
+  // Migrate v1/v2 single-server payload into v8 servers['barkadion-05']
   if (isPreMultiServer && !raw.servers) {
     const migratedBosses = sanitizeBossArray(
       raw.bosses,
       defaults.servers[DEFAULT_SERVER_ID].bosses,
       fallbackNowMs,
       isLegacyV1,
+      true,
+      true,
       true
     );
     const migratedLogs = Array.isArray(raw.alertLogs) ? raw.alertLogs.slice(0, 50) : [];
     return {
-      version: 6,
+      version: 8,
+      notice,
       hasSelectedInitialServer: Array.isArray(raw.bosses),
       activeServerId: DEFAULT_SERVER_ID,
       serverTabs: [{ id: DEFAULT_SERVER_ID, favorite: true }],
@@ -1341,6 +1681,9 @@ export function sanitizeState(raw, fallbackNowMs = Date.now()) {
       tab.id === DEFAULT_SERVER_ID ? defaults.servers[DEFAULT_SERVER_ID].bosses : [];
     const hasExistingBosses = entry && Array.isArray(entry.bosses) && entry.bosses.length > 0;
     const injectWorld = isPreWorldBoss && (tab.id === DEFAULT_SERVER_ID || hasExistingBosses);
+    const injectAbyss = isPreAbyssBoss && (tab.id === DEFAULT_SERVER_ID || hasExistingBosses);
+    const injectExtraFields =
+      isPreExtraFieldBoss && (tab.id === DEFAULT_SERVER_ID || hasExistingBosses);
 
     servers[tab.id] = {
       bosses: sanitizeBossArray(
@@ -1348,7 +1691,9 @@ export function sanitizeState(raw, fallbackNowMs = Date.now()) {
         fallbackBosses,
         fallbackNowMs,
         false,
-        injectWorld
+        injectWorld,
+        injectAbyss,
+        injectExtraFields
       ),
       alertLogs: entry && Array.isArray(entry.alertLogs) ? entry.alertLogs.slice(0, 50) : [],
     };
@@ -1360,7 +1705,8 @@ export function sanitizeState(raw, fallbackNowMs = Date.now()) {
       : orderedTabs[0].id;
 
   return {
-    version: 6,
+    version: 8,
+    notice,
     hasSelectedInitialServer: Boolean(raw.hasSelectedInitialServer),
     activeServerId,
     serverTabs: orderedTabs,
@@ -1372,12 +1718,13 @@ export function sanitizeState(raw, fallbackNowMs = Date.now()) {
 
 export function createDefaultSharedState(referenceMs = Date.now()) {
   return {
-    version: 7,
+    version: 9,
     revision: 1,
     updatedAtMs: referenceMs,
     updatedBy: '초기 설정',
     serverOffsetSec: 0,
     lastMaintenanceResetMs: getMostRecentWednesdayResetMs(referenceMs, '08:00'),
+    notice: createDefaultNotice(),
     maintenance: {
       autoWednesdayReset: true,
       maintenanceEndTime: '08:00',
@@ -1394,17 +1741,18 @@ export function sanitizeSharedState(raw, fallbackNowMs = Date.now()) {
   const defaults = createDefaultSharedState(fallbackNowMs);
   if (!raw || typeof raw !== 'object') return defaults;
 
-  // Support upgrading legacy full state (v1..v6) into shared v7 format cleanly
+  // Support upgrading legacy full state (v1..v8) into shared v9 format cleanly
   if (raw.bosses && !raw.servers) {
     const legacy = sanitizeState(raw, fallbackNowMs);
     return sanitizeSharedState(
       {
-        version: 7,
+        version: 9,
         revision: 1,
         updatedAtMs: fallbackNowMs,
         updatedBy: '백업 가져오기',
         serverOffsetSec: legacy.settings.serverOffsetSec,
         lastMaintenanceResetMs: legacy.lastMaintenanceResetMs,
+        notice: legacy.notice,
         maintenance: {
           autoWednesdayReset: legacy.settings.autoWednesdayReset,
           maintenanceEndTime: legacy.settings.maintenanceEndTime,
@@ -1433,11 +1781,14 @@ export function sanitizeSharedState(raw, fallbackNowMs = Date.now()) {
   const lastMaintenanceResetMs = Number.isFinite(Number(raw.lastMaintenanceResetMs))
     ? Number(raw.lastMaintenanceResetMs)
     : getMostRecentWednesdayResetMs(fallbackNowMs, maintenanceEndTime);
+  const notice = sanitizeNoticeObject(raw.notice);
 
   const rawServers = raw.servers && typeof raw.servers === 'object' ? raw.servers : {};
   const servers = {};
   const versionNum = Number(raw.version || 0);
   const isPreWorldBoss = versionNum > 0 && versionNum < 4;
+  const isPreAbyssBoss = versionNum > 0 && versionNum < 8;
+  const isPreExtraFieldBoss = versionNum > 0 && versionNum < 9;
 
   for (const [sid, entry] of Object.entries(rawServers)) {
     if (!SERVER_MAP.has(sid) || !entry || typeof entry !== 'object') continue;
@@ -1445,13 +1796,17 @@ export function sanitizeSharedState(raw, fallbackNowMs = Date.now()) {
       sid === DEFAULT_SERVER_ID ? defaults.servers[DEFAULT_SERVER_ID].bosses : [];
     const hasExisting = Array.isArray(entry.bosses) && entry.bosses.length > 0;
     const injectWorld = isPreWorldBoss && (sid === DEFAULT_SERVER_ID || hasExisting);
+    const injectAbyss = isPreAbyssBoss && (sid === DEFAULT_SERVER_ID || hasExisting);
+    const injectExtraFields = isPreExtraFieldBoss && (sid === DEFAULT_SERVER_ID || hasExisting);
     servers[sid] = {
       bosses: sanitizeBossArray(
         Array.isArray(entry.bosses) ? entry.bosses : fallbackBosses,
         fallbackBosses,
         fallbackNowMs,
         false,
-        injectWorld
+        injectWorld,
+        injectAbyss,
+        injectExtraFields
       ),
     };
   }
@@ -1473,12 +1828,13 @@ export function sanitizeSharedState(raw, fallbackNowMs = Date.now()) {
       : '초기 설정';
 
   return {
-    version: 7,
+    version: 9,
     revision,
     updatedAtMs,
     updatedBy,
     serverOffsetSec,
     lastMaintenanceResetMs,
+    notice,
     maintenance: {
       autoWednesdayReset,
       maintenanceEndTime,
@@ -1508,6 +1864,7 @@ export function createDefaultLocalPrefs() {
       groupByType: s.groupByType,
     },
     bossNotifyOverrides: {},
+    bossViewPrefs: {},
     serverAlertLogs: {},
   };
 }
@@ -1555,6 +1912,23 @@ export function sanitizeLocalPrefs(raw) {
     }
   }
 
+  const bossViewPrefs = {};
+  if (raw.bossViewPrefs && typeof raw.bossViewPrefs === 'object') {
+    for (const [sid, bossMap] of Object.entries(raw.bossViewPrefs)) {
+      if (!SERVER_MAP.has(sid) || !bossMap || typeof bossMap !== 'object') continue;
+      const cleanMap = {};
+      for (const [bid, pref] of Object.entries(bossMap)) {
+        if (!pref || typeof pref !== 'object') continue;
+        const favorite = Boolean(pref.favorite);
+        const hidden = Boolean(pref.hidden);
+        if (favorite || hidden) {
+          cleanMap[bid] = { favorite, hidden };
+        }
+      }
+      if (Object.keys(cleanMap).length) bossViewPrefs[sid] = cleanMap;
+    }
+  }
+
   const serverAlertLogs = {};
   if (raw.serverAlertLogs && typeof raw.serverAlertLogs === 'object') {
     for (const [sid, logs] of Object.entries(raw.serverAlertLogs)) {
@@ -1570,6 +1944,7 @@ export function sanitizeLocalPrefs(raw) {
     serverTabs,
     settings: personalSettings,
     bossNotifyOverrides,
+    bossViewPrefs,
     serverAlertLogs,
   };
 }
@@ -1610,11 +1985,13 @@ export function mergeSharedAndLocalState(sharedState, localPrefs, nowMs = Date.n
   }
 
   return {
-    version: 6,
+    version: 8,
     hasSelectedInitialServer: cleanLocal.hasSelectedInitialServer,
     activeServerId,
     serverTabs: activeTabs,
     lastMaintenanceResetMs: cleanShared.lastMaintenanceResetMs,
+    notice: cleanShared.notice,
+    bossViewPrefs: cleanLocal.bossViewPrefs,
     settings: {
       ...cleanLocal.settings,
       serverOffsetSec: cleanShared.serverOffsetSec,
@@ -1667,12 +2044,13 @@ export function extractSharedStateFromAppState(appState, options = {}) {
 
   return sanitizeSharedState(
     {
-      version: 7,
+      version: 9,
       revision: prevShared?.revision || appState?._sharedMeta?.revision || 1,
       updatedAtMs: options.updatedAtMs ?? appState?._sharedMeta?.updatedAtMs ?? nowMs,
       updatedBy: options.updatedBy ?? appState?._sharedMeta?.updatedBy ?? '편집자',
       serverOffsetSec: appState?.settings?.serverOffsetSec ?? prevShared?.serverOffsetSec ?? 0,
       lastMaintenanceResetMs: appState?.lastMaintenanceResetMs,
+      notice: sanitizeNoticeObject(appState?.notice ?? prevShared?.notice),
       maintenance: {
         autoWednesdayReset: appState?.settings?.autoWednesdayReset !== false,
         maintenanceEndTime: appState?.settings?.maintenanceEndTime || '08:00',

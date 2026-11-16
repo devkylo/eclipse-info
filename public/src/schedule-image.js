@@ -1,5 +1,9 @@
 import {
   isWorldBoss,
+  isAbyssBoss,
+  isWeeklyFixedBoss,
+  getWeeklyBossWindow,
+  formatWeekdayKorean,
   isBossRedAlert,
   normalizeFixedTimes,
   getEffectiveActiveSec,
@@ -214,18 +218,27 @@ export function renderScheduleCanvas(bosses, nowMs = Date.now(), options = {}) {
       ctx.fillRect(padX, y, 6, rowH);
       ctx.restore();
 
-      // Type badge ([월드] or [필드])
+      // Type badge ([월드], [어비스], or [필드])
       const textX = padX + 20;
-      const typeTag = world ? '월드' : '필드';
+      const abyss = isAbyssBoss(boss);
+      const typeTag = world ? '월드' : abyss ? '어비스' : '필드';
       ctx.font = `700 11px ${FONT_SANS}`;
       const tagW = ctx.measureText(typeTag).width + 12;
       drawRoundedRect(ctx, textX, y + 12, tagW, 20, 6);
-      ctx.fillStyle = world ? 'rgba(168, 85, 247, 0.24)' : 'rgba(59, 130, 246, 0.2)';
+      ctx.fillStyle = world
+        ? 'rgba(168, 85, 247, 0.24)'
+        : abyss
+          ? 'rgba(6, 182, 212, 0.22)'
+          : 'rgba(59, 130, 246, 0.2)';
       ctx.fill();
-      ctx.strokeStyle = world ? 'rgba(168, 85, 247, 0.6)' : 'rgba(59, 130, 246, 0.45)';
+      ctx.strokeStyle = world
+        ? 'rgba(168, 85, 247, 0.6)'
+        : abyss
+          ? 'rgba(34, 211, 238, 0.55)'
+          : 'rgba(59, 130, 246, 0.45)';
       ctx.lineWidth = 1;
       ctx.stroke();
-      ctx.fillStyle = world ? '#e9d5ff' : '#bfdbfe';
+      ctx.fillStyle = world ? '#e9d5ff' : abyss ? '#a5f3fc' : '#bfdbfe';
       ctx.textAlign = 'center';
       ctx.fillText(typeTag, textX + tagW / 2, y + 22);
 
@@ -276,6 +289,20 @@ export function renderScheduleCanvas(bosses, nowMs = Date.now(), options = {}) {
           timeText = '시간 미설정';
           badgeText = '대기';
         }
+      } else if (isWeeklyFixedBoss(boss)) {
+        const win = getWeeklyBossWindow(boss, nowMs);
+        const weeklyStr = `매주 ${formatWeekdayKorean(boss.weeklyDay)} ${boss.weeklyTime} 고정`;
+        const durStr = formatDurationKorean(getEffectiveActiveSec(boss));
+        if (win.isActiveNow) {
+          subLine = `${weeklyStr}  ·  ${durStr} 유지  ·  ${formatTimeHHMM(win.windowStartMs)} ~ ${formatTimeHHMM(win.windowEndMs)}`;
+          timeText = `~${formatTimeHHMM(win.windowEndMs)} 종료`;
+          badgeText = `출현 중 (${formatCountdownText(win.windowEndMs - nowMs).replace(/ 후$/, ' 남음')})`;
+        } else {
+          const targetMs = win.nextStartMs ?? nowMs;
+          subLine = `${weeklyStr}  ·  ${durStr} 출현`;
+          timeText = `${formatRelativeDayLabel(targetMs, nowMs)} ${formatTimeHHMM(targetMs)}`;
+          badgeText = formatCountdownText(targetMs - nowMs);
+        }
       } else {
         const isUnset = boss.killDurationSec === null || boss.killDurationSec === undefined;
         const killText = isUnset ? '처치 미정(0분)' : `처치 ${formatDurationKorean(getEffectiveKillSec(boss))}`;
@@ -324,7 +351,7 @@ export function renderScheduleCanvas(bosses, nowMs = Date.now(), options = {}) {
   ctx.textAlign = 'left';
   ctx.fillStyle = '#64748b';
   ctx.font = `600 11.5px ${FONT_SANS}`;
-  ctx.fillText(`총 ${sorted.length}종 보스 · 월드 보스 / 필드 보스 통합 시간표`, padX, footerY);
+  ctx.fillText(`총 ${sorted.length}종 보스 · 월드 / 필드 / 어비스 통합 시간표`, padX, footerY);
 
   ctx.textAlign = 'right';
   ctx.fillText('이클립스: 더 어웨이크닝 · 보스 타이머', width - padX, footerY);
