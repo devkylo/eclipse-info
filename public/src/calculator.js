@@ -6,6 +6,32 @@
 
 export const DEFAULT_NOTIFY_OFFSETS_SEC = [600, 300, 60, 0];
 export const FIELD_BOSS_RED_WINDOW_MS = 10 * 60 * 1000; // 10 minutes before spawn
+export const KST_OFFSET_MS = 9 * 60 * 60 * 1000; // Asia/Seoul (UTC+09:00)
+
+export function getKstDateParts(ms = Date.now()) {
+  const d = new Date(Number(ms) + KST_OFFSET_MS);
+  return {
+    year: d.getUTCFullYear(),
+    month: d.getUTCMonth(),
+    date: d.getUTCDate(),
+    day: d.getUTCDay(),
+    hours: d.getUTCHours(),
+    minutes: d.getUTCMinutes(),
+    seconds: d.getUTCSeconds(),
+  };
+}
+
+export function buildKstTimestamp(year, month, date, hours = 0, minutes = 0, seconds = 0) {
+  return Date.UTC(year, month, date, hours, minutes, seconds, 0) - KST_OFFSET_MS;
+}
+
+export function getKstDayDiff(targetMs, refMs = Date.now()) {
+  const target = getKstDateParts(targetMs);
+  const now = getKstDateParts(refMs);
+  const targetDayUtc = Date.UTC(target.year, target.month, target.date);
+  const nowDayUtc = Date.UTC(now.year, now.month, now.date);
+  return Math.round((targetDayUtc - nowDayUtc) / (24 * 3600 * 1000));
+}
 
 export const SERVER_WORLD_GROUPS = [
   { id: 'heskarion', name: '헤스카리온', channels: 6 },
@@ -77,7 +103,7 @@ export const PRESET_FIELD_BOSS_SPECS = [
     bossType: 'field',
     level: 40,
     name: '레마넌트',
-    killDurationSec: 60,
+    killDurationSec: null,
     respawnDurationSec: 8 * 3600,
     hhmm: '16:20',
     color: '#f59e0b',
@@ -101,7 +127,7 @@ export const PRESET_FIELD_BOSS_SPECS = [
     name: '샤렐나',
     killDurationSec: 60,
     respawnDurationSec: 10 * 3600,
-    hhmm: '18:57',
+    hhmm: '16:57',
     color: '#8b5cf6',
     memo: '',
   },
@@ -209,15 +235,20 @@ export function normalizeFixedTimes(times) {
 }
 
 /**
- * Build an epoch timestamp for HH:MM(:SS) on the calendar day of referenceMs + dayOffset.
+ * Build an epoch timestamp for HH:MM(:SS) in KST (UTC+9) on the calendar day of referenceMs + dayOffset.
  */
 export function buildTimestampOnDay(timeStr, referenceMs = Date.now(), dayOffset = 0) {
   const parsed = parseTimeString(timeStr);
   if (!parsed) return null;
-  const d = new Date(referenceMs);
-  d.setDate(d.getDate() + dayOffset);
-  d.setHours(parsed.hours, parsed.minutes, parsed.seconds, 0);
-  return d.getTime();
+  const p = getKstDateParts(referenceMs);
+  return buildKstTimestamp(
+    p.year,
+    p.month,
+    p.date + dayOffset,
+    parsed.hours,
+    parsed.minutes,
+    parsed.seconds
+  );
 }
 
 export function normalizeMaintenanceTimeStr(timeStr) {
@@ -227,35 +258,39 @@ export function normalizeMaintenanceTimeStr(timeStr) {
 }
 
 /**
- * Find the most recent Wednesday HH:MM timestamp <= nowMs.
+ * Find the most recent Wednesday HH:MM KST timestamp <= nowMs.
  */
 export function getMostRecentWednesdayResetMs(nowMs = Date.now(), timeStr = '08:00') {
   const parsed = parseTimeString(timeStr) || { hours: 8, minutes: 0, seconds: 0 };
-  const d = new Date(nowMs);
-  const diffDays = (d.getDay() - 3 + 7) % 7; // 3 = Wednesday
-  const candidate = new Date(
-    d.getFullYear(),
-    d.getMonth(),
-    d.getDate() - diffDays,
+  const p = getKstDateParts(nowMs);
+  const diffDays = (p.day - 3 + 7) % 7; // 3 = Wednesday in KST
+  let candidateMs = buildKstTimestamp(
+    p.year,
+    p.month,
+    p.date - diffDays,
     parsed.hours,
     parsed.minutes,
-    parsed.seconds,
-    0
+    parsed.seconds
   );
-  if (nowMs < candidate.getTime()) {
-    candidate.setDate(candidate.getDate() - 7);
+  if (nowMs < candidateMs) {
+    candidateMs = buildKstTimestamp(
+      p.year,
+      p.month,
+      p.date - diffDays - 7,
+      parsed.hours,
+      parsed.minutes,
+      parsed.seconds
+    );
   }
-  return candidate.getTime();
+  return candidateMs;
 }
 
 /**
- * Find the next upcoming Wednesday HH:MM timestamp > nowMs.
+ * Find the next upcoming Wednesday HH:MM KST timestamp > nowMs.
  */
 export function getNextWednesdayResetMs(nowMs = Date.now(), timeStr = '08:00') {
   const recent = getMostRecentWednesdayResetMs(nowMs, timeStr);
-  const d = new Date(recent);
-  d.setDate(d.getDate() + 7);
-  return d.getTime();
+  return recent + 7 * 24 * 3600 * 1000;
 }
 
 /**
@@ -1006,26 +1041,22 @@ export function pad2(n) {
 }
 
 export function formatTimeHHMM(ms) {
-  const d = new Date(ms);
-  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  const p = getKstDateParts(ms);
+  return `${pad2(p.hours)}:${pad2(p.minutes)}`;
 }
 
 export function formatTimeHHMMSS(ms) {
-  const d = new Date(ms);
-  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  const p = getKstDateParts(ms);
+  return `${pad2(p.hours)}:${pad2(p.minutes)}:${pad2(p.seconds)}`;
 }
 
 export function formatRelativeDayLabel(targetMs, nowMs = Date.now()) {
-  const target = new Date(targetMs);
-  const now = new Date(nowMs);
-  const targetDay = new Date(target.getFullYear(), target.getMonth(), target.getDate()).getTime();
-  const nowDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const diffDays = Math.round((targetDay - nowDay) / (24 * 3600 * 1000));
-
+  const diffDays = getKstDayDiff(targetMs, nowMs);
   if (diffDays === 0) return '오늘';
   if (diffDays === 1) return '내일';
   if (diffDays === -1) return '어제';
-  return `${target.getMonth() + 1}/${target.getDate()}`;
+  const target = getKstDateParts(targetMs);
+  return `${target.month + 1}/${target.date}`;
 }
 
 export function formatDurationKorean(totalSec) {

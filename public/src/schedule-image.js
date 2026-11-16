@@ -10,6 +10,7 @@ import {
   getBossStatus,
   sortBosses,
   pad2,
+  getKstDateParts,
   formatTimeHHMM,
   formatRelativeDayLabel,
   formatDurationKorean,
@@ -82,9 +83,9 @@ function getStatusVisual(status) {
 }
 
 function formatDateHeader(ms) {
-  const d = new Date(ms);
+  const p = getKstDateParts(ms);
   const days = ['일', '월', '화', '수', '목', '금', '토'];
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} (${days[d.getDay()]}) ${pad2(d.getHours())}:${pad2(d.getMinutes())} 기준`;
+  return `${p.year}-${pad2(p.month + 1)}-${pad2(p.date)} (${days[p.day]}) ${pad2(p.hours)}:${pad2(p.minutes)} 기준`;
 }
 
 function truncateText(ctx, text, maxWidth) {

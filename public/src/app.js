@@ -33,6 +33,8 @@ import {
   getBossStatus,
   sortBosses,
   pad2,
+  getKstDateParts,
+  getKstDayDiff,
   formatTimeHHMM,
   formatTimeHHMMSS,
   formatRelativeDayLabel,
@@ -410,9 +412,9 @@ function setActiveLogs(nextLogs) {
 }
 
 function formatFullClock(ms) {
-  const d = new Date(ms);
+  const p = getKstDateParts(ms);
   const days = ['일', '월', '화', '수', '목', '금', '토'];
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} (${days[d.getDay()]}) ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  return `${p.year}-${pad2(p.month + 1)}-${pad2(p.date)} (${days[p.day]}) ${pad2(p.hours)}:${pad2(p.minutes)}:${pad2(p.seconds)}`;
 }
 
 function showToast(title, body, urgent = false) {
@@ -704,8 +706,8 @@ function renderGlobalNotifyControls() {
   const maintTimeStr = normalizeMaintenanceTimeStr(s.maintenanceEndTime);
   if (s.autoWednesdayReset) {
     const nextWedMs = getNextWednesdayResetMs(getNowMs(), maintTimeStr);
-    const d = new Date(nextWedMs);
-    maintBadge.textContent = `수요일 ${maintTimeStr} 자동 리셋 (다음 ${d.getMonth() + 1}/${d.getDate()})`;
+    const p = getKstDateParts(nextWedMs);
+    maintBadge.textContent = `수요일 ${maintTimeStr} 자동 리셋 (다음 ${p.month + 1}/${p.date})`;
     maintBadge.className = 'pill pill-blue';
   } else {
     maintBadge.textContent = `수요일 자동 리셋 꺼짐`;
@@ -1650,8 +1652,8 @@ function closeModal(id) {
 
 function formatShortDateTime(ms) {
   if (!Number.isFinite(Number(ms))) return '미사용';
-  const d = new Date(Number(ms));
-  return `${d.getMonth() + 1}/${d.getDate()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  const p = getKstDateParts(Number(ms));
+  return `${p.month + 1}/${p.date} ${pad2(p.hours)}:${pad2(p.minutes)}`;
 }
 
 function renderEditorsList() {
@@ -1854,13 +1856,7 @@ function openBossModal(bossId) {
         ? boss.anchorTimeMs
         : boss.nextSpawnMs || nowMs;
 
-    const targetDay = new Date(refTimeMs);
-    const today = new Date(nowMs);
-    const dayDiff = Math.round(
-      (new Date(targetDay.getFullYear(), targetDay.getMonth(), targetDay.getDate()).getTime() -
-        new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()) /
-        (24 * 3600 * 1000)
-    );
+    const dayDiff = getKstDayDiff(refTimeMs, nowMs);
     $('boss-form-day-offset').value = String([-1, 0, 1].includes(dayDiff) ? dayDiff : 0);
     $('boss-form-time').value = formatTimeHHMM(refTimeMs);
 
@@ -1926,13 +1922,7 @@ function openQuickTimeModal(bossId) {
   const refMs =
     mode !== 'manual' && Number.isFinite(boss.anchorTimeMs) ? boss.anchorTimeMs : boss.nextSpawnMs;
 
-  const targetDay = new Date(refMs);
-  const today = new Date(nowMs);
-  const dayDiff = Math.round(
-    (new Date(targetDay.getFullYear(), targetDay.getMonth(), targetDay.getDate()).getTime() -
-      new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()) /
-      (24 * 3600 * 1000)
-  );
+  const dayDiff = getKstDayDiff(refMs, nowMs);
   $('quick-day-offset').value = String([-1, 0, 1].includes(dayDiff) ? dayDiff : 0);
   $('quick-time-input').value = formatTimeHHMM(refMs);
 
@@ -2019,9 +2009,9 @@ function updateMaintenanceScheduleStatus() {
   const timeStr = normalizeMaintenanceTimeStr(appState.settings.maintenanceEndTime);
   if (appState.settings.autoWednesdayReset) {
     const nextWedMs = getNextWednesdayResetMs(nowMs, timeStr);
-    const d = new Date(nextWedMs);
+    const p = getKstDateParts(nextWedMs);
     const days = ['일', '월', '화', '수', '목', '금', '토'];
-    statusEl.textContent = `다음 자동 리셋 예정: ${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} (${days[d.getDay()]}) ${timeStr}`;
+    statusEl.textContent = `다음 자동 리셋 예정: ${p.year}-${pad2(p.month + 1)}-${pad2(p.date)} (${days[p.day]}) ${timeStr}`;
   } else {
     statusEl.textContent = '매주 수요일 자동 리셋이 꺼져 있습니다. 필요 시 아래 버튼으로 수동 리셋할 수 있습니다.';
   }
