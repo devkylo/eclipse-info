@@ -312,19 +312,19 @@ export async function fetchAuthStatus() {
   }
 }
 
-export async function postAuthAction(payload) {
+async function postAuthedJson(url, payload, offlineMessage, netErrorMessage) {
   if (!isHttpProtocol()) {
     return {
       ok: false,
       status: 0,
-      message: '로컬 파일 모드(file://)에서는 권한 서버를 사용할 수 없습니다.',
+      message: offlineMessage,
     };
   }
   try {
-    const res = await fetch('/api/auth', {
+    const res = await fetch(url, {
       method: 'POST',
       headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(payload),
+      body: JSON.stringify(payload ?? {}),
     });
     const data = await parseJsonResponse(res);
     return { status: res.status, ...data };
@@ -332,7 +332,25 @@ export async function postAuthAction(payload) {
     return {
       ok: false,
       status: 0,
-      message: '권한 서버와 통신하지 못했습니다.',
+      message: netErrorMessage,
     };
   }
+}
+
+export async function postAuthAction(payload) {
+  return postAuthedJson(
+    '/api/auth',
+    payload,
+    '로컬 파일 모드(file://)에서는 권한 서버를 사용할 수 없습니다.',
+    '권한 서버와 통신하지 못했습니다.'
+  );
+}
+
+export async function postTelegramTest() {
+  return postAuthedJson(
+    '/api/telegram-test',
+    {},
+    '로컬 파일 모드(file://)에서는 텔레그램 테스트 전송을 사용할 수 없습니다.',
+    '텔레그램 테스트 API와 통신하지 못했습니다.'
+  );
 }

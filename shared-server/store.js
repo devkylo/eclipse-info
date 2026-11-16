@@ -5,23 +5,28 @@ import { createDefaultSharedState, sanitizeSharedState } from '../public/src/cal
 
 const KEY_SHARED_STATE = 'shared-state';
 const KEY_AUTH_CONFIG = 'auth-config';
+export const KEY_TELEGRAM_STATE = 'telegram-alert-state';
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const MAX_EDITORS = 50;
 
-export function getEnvHostKey() {
+export function getRuntimeEnv(name) {
   try {
     if (typeof Netlify !== 'undefined' && Netlify.env && typeof Netlify.env.get === 'function') {
-      const v = Netlify.env.get('HOST_ADMIN_KEY');
+      const v = Netlify.env.get(name);
       if (typeof v === 'string' && v.trim()) return v.trim();
     }
   } catch {
     // Fallback to process.env outside Netlify runtime
   }
-  const envVal = process.env.HOST_ADMIN_KEY;
+  const envVal = process.env[name];
   return typeof envVal === 'string' && envVal.trim() ? envVal.trim() : '';
 }
 
-function jsonResponse(status, payload) {
+export function getEnvHostKey() {
+  return getRuntimeEnv('HOST_ADMIN_KEY');
+}
+
+export function jsonResponse(status, payload) {
   return new Response(JSON.stringify(payload), {
     status,
     headers: {
@@ -145,7 +150,7 @@ function extractBearerToken(req) {
   return typeof alt === 'string' ? alt.trim() : '';
 }
 
-function evaluateAuth(req, authConfig, envHostKey) {
+export function evaluateAuth(req, authConfig, envHostKey) {
   const configured = Boolean(envHostKey || authConfig.hostKeyHash);
   const envHostLocked = Boolean(envHostKey);
   const rawToken = extractBearerToken(req);
@@ -224,12 +229,12 @@ async function readOrInitSessionSecretConfig(kvStore) {
   return cfg;
 }
 
-async function readAuthSafe(kvStore) {
+export async function readAuthSafe(kvStore) {
   const raw = await kvStore.get(KEY_AUTH_CONFIG);
   return sanitizeAuthConfig(raw);
 }
 
-async function readSharedStateOrDefault(kvStore) {
+export async function readSharedStateOrDefault(kvStore) {
   const raw = await kvStore.get(KEY_SHARED_STATE);
   if (raw && typeof raw === 'object') {
     return sanitizeSharedState(raw, Date.now());
@@ -562,6 +567,7 @@ export function createFileKvStore(dataDir) {
   function filePathForKey(key) {
     if (key === KEY_SHARED_STATE) return path.join(dataDir, 'shared-state.json');
     if (key === KEY_AUTH_CONFIG) return path.join(dataDir, 'auth.json');
+    if (key === KEY_TELEGRAM_STATE) return path.join(dataDir, 'telegram-alerts.json');
     throw new Error(`Unsupported store key: ${key}`);
   }
 

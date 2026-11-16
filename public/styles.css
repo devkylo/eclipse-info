@@ -1354,6 +1354,14 @@ input[type='number']:focus {
   color: var(--text-dim);
 }
 
+.field-hint code {
+  background: rgba(148, 163, 184, 0.14);
+  color: #cbd5e1;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
 .checkbox-field {
   flex-direction: row;
   align-items: flex-start;

@@ -5,6 +5,15 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { createRequestHandler } from '../server.js';
+import { createDefaultSharedState } from '../public/src/calculator.js';
+import { createFileKvStore } from '../shared-server/store.js';
+import {
+  DEFAULT_TELEGRAM_CHAT_ID,
+  collectTenMinuteAlertCandidates,
+  getTelegramConfig,
+  normalizeTelegramChatId,
+  runTelegramScheduledAlerts,
+} from '../shared-server/telegram.js';
 
 async function invokeHandler(handler, method, url, body = null, reqHeaders = {}) {
   const req = Readable.from(body === null ? [] : [Buffer.from(body, 'utf8')]);
@@ -270,5 +279,210 @@ test('HOST_ADMIN_KEY env override locks host setup and authenticates host direct
       assert.equal(JSON.parse(loginRes.text).role, 'host');
     },
     { envHostKey: 'env-master-key-99' }
+  );
+});
+
+test('Telegram 10-min alert evaluator, 2-min cron dedup, fast-skip, and @eclipse_boss_ba05 defaults work cleanly', async () => {
+  assert.equal(DEFAULT_TELEGRAM_CHAT_ID, '@eclipse_boss_ba05');
+  assert.equal(normalizeTelegramChatId('https://t.me/eclipse_boss_ba05'), '@eclipse_boss_ba05');
+  assert.equal(normalizeTelegramChatId('-1001234567890'), '-1001234567890');
+
+  const prevTgTok = process.env.TELEGRAM_BOT_TOKEN;
+  const prevAliasTok = process.env.eclipse_boss_ba05_bot_token;
+  try {
+    delete process.env.TELEGRAM_BOT_TOKEN;
+    process.env.eclipse_boss_ba05_bot_token = '55555:ALIAS_TOKEN';
+    assert.equal(getTelegramConfig().botToken, '55555:ALIAS_TOKEN');
+  } finally {
+    if (prevTgTok === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+    else process.env.TELEGRAM_BOT_TOKEN = prevTgTok;
+    if (prevAliasTok === undefined) delete process.env.eclipse_boss_ba05_bot_token;
+    else process.env.eclipse_boss_ba05_bot_token = prevAliasTok;
+  }
+
+  // 2026-11-17 11:50:00 KST -> 10m before 12:00 World Boss pair (크라카 + 에버하르트)
+  const kst1150 = Date.UTC(2026, 10, 17, 11 - 9, 50, 0, 0);
+  const shared = createDefaultSharedState(kst1150);
+
+  const worldDue = collectTenMinuteAlertCandidates(shared, {
+    nowMs: kst1150,
+    serverId: 'barkadion-05',
+  });
+  assert.deepEqual(
+    worldDue.candidates.map((c) => c.bossId).sort(),
+    ['everhart', 'kraka']
+  );
+
+  // Too early at 11:48:00 KST -> 0 candidates
+  const kst1148 = Date.UTC(2026, 10, 17, 11 - 9, 48, 0, 0);
+  const tooEarly = collectTenMinuteAlertCandidates(shared, {
+    nowMs: kst1148,
+    serverId: 'barkadion-05',
+  });
+  assert.equal(tooEarly.candidates.length, 0);
+
+  // Full scheduled run with dedup + fast-skip Blobs read check
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'boss-tg-test-'));
+  try {
+    const rawKv = createFileKvStore(tmpDir);
+    await rawKv.set('shared-state', shared);
+
+    let alertStateReads = 0;
+    const countedKv = {
+      async get(key) {
+        if (key === 'telegram-alert-state') alertStateReads += 1;
+        return rawKv.get(key);
+      },
+      async set(key, value) {
+        return rawKv.set(key, value);
+      },
+    };
+
+    const sentPayloads = [];
+    const mockFetch = async (url, init) => {
+      sentPayloads.push({ url, body: JSON.parse(init.body) });
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { ok: true, result: { message_id: 77 } };
+        },
+      };
+    };
+
+    // Fast-skip when 0 candidates -> does NOT even read telegram-alert-state
+    const earlyRun = await runTelegramScheduledAlerts(countedKv, {
+      nowMs: kst1148,
+      config: { botToken: '12345:TEST_TOKEN' },
+      fetchImpl: mockFetch,
+    });
+    assert.equal(earlyRun.sentCount, 0);
+    assert.equal(alertStateReads, 0);
+    assert.equal(sentPayloads.length, 0);
+
+    // At 11:50:00 -> bundles 크라카 + 에버하르트 into 1 message to @eclipse_boss_ba05
+    const hitRun = await runTelegramScheduledAlerts(countedKv, {
+      nowMs: kst1150,
+      config: { botToken: '12345:TEST_TOKEN' },
+      fetchImpl: mockFetch,
+    });
+    assert.equal(hitRun.sentCount, 2);
+    assert.equal(sentPayloads.length, 1);
+    assert.equal(sentPayloads[0].url, 'https://api.telegram.org/bot12345:TEST_TOKEN/sendMessage');
+    assert.equal(sentPayloads[0].body.chat_id, '@eclipse_boss_ba05');
+    assert.match(sentPayloads[0].body.text, /10분 전/);
+    assert.match(sentPayloads[0].body.text, /크라카/);
+    assert.match(sentPayloads[0].body.text, /에버하르트/);
+
+    // Next 2-minute tick (11:52:00) -> still within window, deduplicated cleanly
+    const repeatRun = await runTelegramScheduledAlerts(countedKv, {
+      nowMs: kst1150 + 2 * 60 * 1000,
+      config: { botToken: '12345:TEST_TOKEN' },
+      fetchImpl: mockFetch,
+    });
+    assert.equal(repeatRun.sentCount, 0);
+    assert.equal(repeatRun.alreadySent, 2);
+    assert.equal(sentPayloads.length, 1);
+
+    // Cycle boss auto-rollover check without web client open: state saved at 01:00 -> 바리탄 01:34 rolls to 05:34 at 05:24:10 KST
+    const kst0100 = Date.UTC(2026, 10, 17, 1 - 9, 0, 0, 0);
+    await rawKv.set('shared-state', createDefaultSharedState(kst0100));
+    const kst0524 = Date.UTC(2026, 10, 17, 5 - 9, 24, 10, 0);
+    const abyssRun = await runTelegramScheduledAlerts(countedKv, {
+      nowMs: kst0524,
+      config: { botToken: '12345:TEST_TOKEN' },
+      fetchImpl: mockFetch,
+    });
+    assert.equal(abyssRun.sentCount, 1);
+    assert.deepEqual(abyssRun.bossNames, ['바리탄']);
+    assert.match(sentPayloads[1].body.text, /\[어비스\] Lv\.50 바리탄/);
+
+    // Weekly fixed boss check: 사바토 (금요일 21:00) at 2026-11-20 20:50:00 KST
+    await rawKv.set('shared-state', shared);
+    const fri2050 = Date.UTC(2026, 10, 20, 20 - 9, 50, 0, 0);
+    const weeklyRun = await runTelegramScheduledAlerts(countedKv, {
+      nowMs: fri2050,
+      config: { botToken: '12345:TEST_TOKEN' },
+      fetchImpl: mockFetch,
+    });
+    assert.equal(weeklyRun.sentCount, 1);
+    assert.deepEqual(weeklyRun.bossNames, ['사바토']);
+
+    // Wednesday maintenance auto-reset in memory: 2026-11-18 11:50 KST -> 크라카 + 에버하르트 + 바리탄(08:00+4h=12:00)
+    const wed1150 = Date.UTC(2026, 10, 18, 11 - 9, 50, 0, 0);
+    const wedCheck = collectTenMinuteAlertCandidates(shared, {
+      nowMs: wed1150,
+      serverId: 'barkadion-05',
+    });
+    assert.deepEqual(
+      wedCheck.candidates.map((c) => c.bossId).sort(),
+      ['baritan', 'everhart', 'kraka']
+    );
+
+    // Respects boss.notifyEnabled === false
+    const mutedShared = {
+      ...shared,
+      servers: {
+        ...shared.servers,
+        'barkadion-05': {
+          bosses: shared.servers['barkadion-05'].bosses.map((b) =>
+            b.id === 'sabato' ? { ...b, notifyEnabled: false } : b
+          ),
+        },
+      },
+    };
+    const mutedCheck = collectTenMinuteAlertCandidates(mutedShared, {
+      nowMs: fri2050,
+      serverId: 'barkadion-05',
+    });
+    assert.equal(mutedCheck.candidates.some((c) => c.bossId === 'sabato'), false);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('/api/telegram-test enforces auth, validates token, and sends formatted test alert', async () => {
+  const sentCalls = [];
+  const mockFetch = async (url, init) => {
+    sentCalls.push({ url, body: JSON.parse(init.body) });
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { ok: true, result: { message_id: 99 } };
+      },
+    };
+  };
+
+  await withTempHandler(
+    async (handler) => {
+      const loginRes = await invokeHandler(
+        handler,
+        'POST',
+        '/api/auth',
+        JSON.stringify({ action: 'login', code: 'host-pw-999' })
+      );
+      const { token } = JSON.parse(loginRes.text);
+
+      // View-only user cannot trigger test push
+      const unauthRes = await invokeHandler(handler, 'POST', '/api/telegram-test', '{}');
+      assert.equal(unauthRes.status, 401);
+
+      // Host succeeds and hits @eclipse_boss_ba05
+      const okRes = await invokeHandler(handler, 'POST', '/api/telegram-test', '{}', {
+        authorization: `Bearer ${token}`,
+      });
+      assert.equal(okRes.status, 200);
+      const okJson = JSON.parse(okRes.text);
+      assert.equal(okJson.ok, true);
+      assert.equal(okJson.chatId, '@eclipse_boss_ba05');
+      assert.equal(sentCalls.length, 1);
+      assert.match(sentCalls[0].body.text, /10분 전/);
+    },
+    {
+      envHostKey: 'host-pw-999',
+      telegramConfig: { botToken: '99999:MOCK_BOT' },
+      telegramFetchImpl: mockFetch,
+    }
   );
 });

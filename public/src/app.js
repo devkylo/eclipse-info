@@ -76,6 +76,7 @@ import {
   saveSharedStateRemote,
   fetchAuthStatus,
   postAuthAction,
+  postTelegramTest,
 } from './storage.js';
 import {
   unlockAudioOnGesture,
@@ -490,6 +491,7 @@ function updateAuthAndSyncUI() {
   $('btn-open-maintenance').disabled = !editable;
   $('btn-open-settings').disabled = !editable;
   $('btn-settings-add-boss').disabled = !editable;
+  $('btn-test-telegram').disabled = !editable || !apiAvailable;
   $('set-server-offset').disabled = !editable;
   $('btn-save-server-offset').disabled = !editable;
   $('btn-export-json').disabled = !editable;
@@ -2127,12 +2129,12 @@ function startTickEngine() {
       if (apiAvailable && !document.hidden) {
         refreshFromServer(true);
       }
-    }, 5000);
+    }, 15000);
   }
 
   const triggerImmediateSync = () => {
     handleTick();
-    if (apiAvailable && Date.now() - lastSyncFetchMs > 2000) {
+    if (apiAvailable && Date.now() - lastSyncFetchMs > 5000) {
       refreshFromServer(true);
     }
   };
@@ -2917,6 +2919,28 @@ function bindEvents() {
     }
     closeModal('modal-settings');
     openBossModal(null);
+  });
+
+  $('btn-test-telegram').addEventListener('click', async () => {
+    if (!canEditShared()) {
+      requireEditPermissionToast();
+      return;
+    }
+    const btn = $('btn-test-telegram');
+    const prevText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '전송 중...';
+    try {
+      const res = await postTelegramTest();
+      if (res.ok) {
+        showToast('텔레그램 테스트 전송 완료', `${res.chatId} 채널로 테스트 메시지를 보냈습니다.`);
+      } else {
+        showToast('텔레그램 전송 실패', res.message || '텔레그램 설정을 확인해 주세요.', true);
+      }
+    } finally {
+      btn.textContent = prevText;
+      updateAuthAndSyncUI();
+    }
   });
 
   $('btn-open-settings').addEventListener('click', () => {

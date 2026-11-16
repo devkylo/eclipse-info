@@ -9,6 +9,7 @@ import {
   handleAuthRequest,
   handleSharedStateRequest,
 } from './shared-server/store.js';
+import { handleTelegramTestRequest } from './shared-server/telegram.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -118,6 +119,16 @@ export function createRequestHandler(options = {}) {
       if (pathname === '/api/auth') {
         const webReq = await toWebRequest(req, reqUrl);
         const webRes = await handleAuthRequest(webReq, kvStore, resolveHostKey());
+        await writeWebResponse(res, webRes);
+        return;
+      }
+
+      if (pathname === '/api/telegram-test') {
+        const webReq = await toWebRequest(req, reqUrl);
+        const webRes = await handleTelegramTestRequest(webReq, kvStore, resolveHostKey(), {
+          config: options.telegramConfig,
+          fetchImpl: options.telegramFetchImpl,
+        });
         await writeWebResponse(res, webRes);
         return;
       }

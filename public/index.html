@@ -56,6 +56,16 @@
               🔑 권한 관리
             </button>
             <a
+              id="btn-telegram-channel"
+              class="btn btn-secondary"
+              href="https://t.me/eclipse_boss_ba05"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="텔레그램 보스 알림 채널 바로가기"
+            >
+              📢 텔레그램 알림방
+            </a>
+            <a
               id="btn-contact-inquiry"
               class="btn btn-secondary"
               href="https://open.kakao.com/o/sxM9H1Nf"
@@ -560,6 +570,21 @@
             <div>
               <button id="btn-settings-add-boss" class="btn btn-primary btn-sm" type="button">
                 + 보스 추가하기
+              </button>
+            </div>
+          </div>
+
+          <div class="field-box">
+            <div class="field-box-header">
+              <span class="field-box-title">📢 텔레그램 10분 전 자동 알림</span>
+              <span class="pill pill-blue">2분 주기</span>
+            </div>
+            <p class="field-hint" style="margin: 0;">
+              출현 10분 전 <code>t.me/eclipse_boss_ba05</code> 채널로 자동 전송됩니다. (Netlify 환경변수 <code>TELEGRAM_BOT_TOKEN</code> 필요)
+            </p>
+            <div class="backup-actions">
+              <button id="btn-test-telegram" class="btn btn-secondary btn-sm" type="button">
+                📢 텔레그램 테스트 전송
               </button>
             </div>
           </div>
